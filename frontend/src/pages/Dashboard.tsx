@@ -2,6 +2,7 @@ import ChatPanel from '../components/ChatPanel'
 import PositionCard from '../components/PositionCard'
 import StrategyPanel from '../components/StrategyPanel'
 import WalletCard from '../components/WalletCard'
+import { WatchPanel } from '../components/WatchPanel'
 
 export default function Dashboard() {
   return (
@@ -23,6 +24,14 @@ export default function Dashboard() {
               Open Positions
             </h3>
             <PositionCard />
+          </div>
+
+          {/* Watch List */}
+          <div>
+            <h3 className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
+              Active Watches
+            </h3>
+            <WatchPanel />
           </div>
 
           {/* Strategy State */}

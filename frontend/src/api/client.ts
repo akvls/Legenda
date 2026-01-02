@@ -204,3 +204,82 @@ export interface PriceResponse {
   price: number
 }
 
+// Watch types
+export interface WatchRule {
+  id: string
+  symbol: string
+  intendedSide: 'LONG' | 'SHORT'
+  triggerType: 'CLOSER_TO_SMA200' | 'CLOSER_TO_EMA1000' | 'CLOSER_TO_SUPERTREND' | 'PRICE_ABOVE' | 'PRICE_BELOW'
+  thresholdPercent: number
+  targetPrice?: number
+  mode: 'NOTIFY_ONLY' | 'AUTO_ENTER'
+  expiryTime: number
+  createdAt: number
+  preset: {
+    riskPercent: number
+    slRule: string
+    trailMode: string
+  }
+  status: 'ACTIVE' | 'TRIGGERED' | 'EXPIRED' | 'CANCELLED'
+  triggeredAt?: number
+  triggeredPrice?: number
+}
+
+export interface WatchesResponse {
+  success: boolean
+  count: number
+  watches: WatchRule[]
+}
+
+export interface DistanceResponse {
+  success: boolean
+  symbol: string
+  type: string
+  currentPrice: number
+  targetPrice: number
+  distancePercent: number
+}
+
+// Combined API object for easy access
+export const api = {
+  // Agent
+  getStatus: () => agent.status(),
+  chat: (message: string) => agent.chat(message),
+  getOpinion: (symbol: string) => agent.opinion(symbol),
+  getJournal: () => agent.journal(),
+  getCircuitBreaker: () => agent.circuitBreaker(),
+  
+  // Strategy
+  registerSymbol: (symbol: string) => strategy.register(symbol),
+  getStrategyState: (symbol: string) => strategy.state(symbol),
+  
+  // Execution
+  getPositions: () => execution.positions(),
+  getOrders: () => execution.orders(),
+  
+  // Market
+  getWallet: () => market.wallet(),
+  getPrice: (symbol: string) => market.price(symbol),
+  
+  // Watches
+  getWatches: () => fetchApi<WatchesResponse>('/agent/watches'),
+  getWatchesForSymbol: (symbol: string) => fetchApi<WatchesResponse>(`/agent/watches/${symbol}`),
+  createWatch: (params: {
+    symbol: string
+    side: 'LONG' | 'SHORT'
+    triggerType: string
+    threshold?: number
+    targetPrice?: number
+    mode?: 'NOTIFY_ONLY' | 'AUTO_ENTER'
+    expiryMinutes?: number
+  }) => fetchApi<{ success: boolean; watch: WatchRule }>('/agent/watch', {
+    method: 'POST',
+    body: JSON.stringify(params),
+  }),
+  cancelWatch: (id: string) => fetchApi<{ success: boolean }>(`/agent/watch/${id}`, {
+    method: 'DELETE',
+  }),
+  getDistance: (symbol: string, type: 'sma200' | 'ema1000' | 'supertrend') => 
+    fetchApi<DistanceResponse>(`/agent/distance/${symbol}/${type}`),
+}
+
