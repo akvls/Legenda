@@ -116,80 +116,80 @@ export default function ChatPanel() {
   return (
     <div className="h-full flex flex-col bg-dark-800 rounded-xl border border-dark-600">
       {/* Header */}
-      <div className="px-4 py-3 border-b border-dark-600 flex justify-between items-start">
+      <div className="px-6 py-4 border-b border-dark-600 flex justify-between items-start">
         <div>
-          <h2 className="text-sm font-medium text-zinc-300">Command Center</h2>
-          <p className="text-xs text-zinc-500">Type commands like "long BTC 1%" or ask questions</p>
+          <h2 className="text-lg font-semibold text-zinc-200">🎯 Legenda Command Center</h2>
+          <p className="text-sm text-zinc-400 mt-1">Type commands like "long BTC" or ask for advice</p>
         </div>
         {messages.length > 0 && (
           <button
             onClick={clearChat}
-            className="p-1.5 hover:bg-dark-600 rounded-lg transition-colors text-zinc-500 hover:text-red-400"
+            className="p-2 hover:bg-dark-600 rounded-lg transition-colors text-zinc-500 hover:text-red-400"
             title="Clear chat (archives to memory)"
           >
-            <Trash2 size={14} />
+            <Trash2 size={18} />
           </button>
         )}
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-3">
+      <div className="flex-1 overflow-y-auto p-6 space-y-4">
         {!historyLoaded && (
-          <div className="text-center text-zinc-500 text-sm py-8">
-            <Loader2 size={24} className="mx-auto mb-2 animate-spin opacity-50" />
+          <div className="text-center text-zinc-500 text-base py-12">
+            <Loader2 size={32} className="mx-auto mb-3 animate-spin opacity-50" />
             <p>Loading chat history...</p>
           </div>
         )}
         
         {historyLoaded && messages.length === 0 && (
-          <div className="text-center text-zinc-500 text-sm py-8">
-            <Bot size={32} className="mx-auto mb-2 opacity-50" />
-            <p>Start by typing a command</p>
-            <p className="text-xs mt-1">Try: "long BTCUSDT 1%" or "what's the market bias?"</p>
+          <div className="text-center text-zinc-500 text-base py-12">
+            <Bot size={48} className="mx-auto mb-3 opacity-50" />
+            <p className="text-lg">Start by typing a command</p>
+            <p className="text-sm mt-2 text-zinc-600">Try: "long BTCUSDT" or "what's your opinion on BTC?"</p>
           </div>
         )}
 
         {messages.map(msg => (
           <div
             key={msg.id}
-            className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+            className={`flex gap-4 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
           >
             {msg.role === 'assistant' && (
-              <div className="w-7 h-7 rounded-lg bg-dark-600 flex items-center justify-center flex-shrink-0">
-                <Bot size={14} className="text-accent-blue" />
+              <div className="w-10 h-10 rounded-xl bg-dark-600 flex items-center justify-center flex-shrink-0">
+                <Bot size={20} className="text-accent-blue" />
               </div>
             )}
             
             <div
               className={`
-                max-w-[85%] px-3 py-2 rounded-xl text-sm
+                max-w-[85%] px-5 py-3 rounded-2xl text-base leading-relaxed
                 ${msg.role === 'user' 
-                  ? 'bg-accent-blue/20 text-zinc-200' 
-                  : `bg-dark-700 text-zinc-300 border-l-2 ${getMessageStyle(msg.type)}`
+                  ? 'bg-accent-blue/20 text-zinc-100' 
+                  : `bg-dark-700 text-zinc-200 border-l-3 ${getMessageStyle(msg.type)}`
                 }
               `}
             >
-              <pre className="whitespace-pre-wrap font-sans">{msg.content}</pre>
-              <span className="text-[10px] text-zinc-500 mt-1 block">
+              <pre className="whitespace-pre-wrap font-sans text-[15px]">{msg.content}</pre>
+              <span className="text-xs text-zinc-500 mt-2 block">
                 {msg.timestamp.toLocaleTimeString()}
               </span>
             </div>
 
             {msg.role === 'user' && (
-              <div className="w-7 h-7 rounded-lg bg-accent-blue/20 flex items-center justify-center flex-shrink-0">
-                <User size={14} className="text-accent-blue" />
+              <div className="w-10 h-10 rounded-xl bg-accent-blue/20 flex items-center justify-center flex-shrink-0">
+                <User size={20} className="text-accent-blue" />
               </div>
             )}
           </div>
         ))}
 
         {loading && (
-          <div className="flex gap-3">
-            <div className="w-7 h-7 rounded-lg bg-dark-600 flex items-center justify-center">
-              <Loader2 size={14} className="text-accent-blue animate-spin" />
+          <div className="flex gap-4">
+            <div className="w-10 h-10 rounded-xl bg-dark-600 flex items-center justify-center">
+              <Loader2 size={20} className="text-accent-blue animate-spin" />
             </div>
-            <div className="bg-dark-700 px-3 py-2 rounded-xl">
-              <span className="text-zinc-400 text-sm">Thinking...</span>
+            <div className="bg-dark-700 px-5 py-3 rounded-2xl">
+              <span className="text-zinc-400 text-base">Thinking...</span>
             </div>
           </div>
         )}
@@ -198,17 +198,17 @@ export default function ChatPanel() {
       </div>
 
       {/* Input */}
-      <div className="p-3 border-t border-dark-600">
-        <div className="flex gap-2">
+      <div className="p-4 border-t border-dark-600">
+        <div className="flex gap-3">
           <input
             type="text"
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type a command..."
+            placeholder="Type a command or ask Legenda..."
             className="
-              flex-1 bg-dark-700 border border-dark-500 rounded-lg px-3 py-2
-              text-sm text-zinc-200 placeholder-zinc-500
+              flex-1 bg-dark-700 border border-dark-500 rounded-xl px-5 py-3
+              text-base text-zinc-100 placeholder-zinc-500
               focus:outline-none focus:border-accent-blue/50
               transition-colors
             "
@@ -217,12 +217,12 @@ export default function ChatPanel() {
             onClick={sendMessage}
             disabled={!input.trim() || loading}
             className="
-              w-10 h-10 rounded-lg bg-accent-blue flex items-center justify-center
+              w-14 h-14 rounded-xl bg-accent-blue flex items-center justify-center
               hover:bg-accent-blue/80 disabled:opacity-50 disabled:cursor-not-allowed
               transition-all
             "
           >
-            <Send size={16} className="text-white" />
+            <Send size={22} className="text-white" />
           </button>
         </div>
       </div>
