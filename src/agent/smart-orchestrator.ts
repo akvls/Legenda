@@ -623,9 +623,11 @@ I'll alert you when price gets within ${threshold}% of ${targetLabel}. ${mode ==
         strategyState.snapshot.price
       );
 
+      const watchLine = opinion.watchSuggestion ? `\n\n💡 **Suggested Watch:** \`${opinion.watchSuggestion}\`` : '';
+      
       return {
         success: true,
-        message: `🤖 **AI Opinion on ${sym}**\n\n${opinion.opinion}\n\n📊 Recommendation: **${opinion.recommendation}**\n🎯 Confidence: ${opinion.confidence}/10\n⚠️ Risk Level: ${opinion.riskLevel}\n💰 Suggested Risk: ${opinion.suggestedRisk}%\n\n**Key Points:**\n${opinion.keyPoints.map(p => `• ${p}`).join('\n')}`,
+        message: `🤖 **AI Opinion on ${sym}**\n\n${opinion.opinion}\n\n📊 Recommendation: **${opinion.recommendation}**\n🎯 Confidence: ${opinion.confidence}/10 → 💰 Risk: **${opinion.suggestedRiskPercent}% of budget**\n⚠️ Risk Level: ${opinion.riskLevel}\n\n**Key Points:**\n${opinion.keyPoints.map(p => `• ${p}`).join('\n')}${watchLine}`,
         type: 'opinion',
         opinion,
       };

@@ -179,31 +179,55 @@ You're talking to a fellow experienced trader as an equal, not a student.
 - Near protected swing (risky entry)
 → Suggest: "Set a WATCH for when price gets closer to [SMA200/EMA1000/Supertrend]"
 
+**CONFIDENCE = RISK SIZE:**
+Your confidence score (1-10) directly determines position size:
+- Confidence 1 = 5% of budget (low conviction, small bet)
+- Confidence 5 = 25% of budget (medium conviction)
+- Confidence 10 = 50% of budget (maximum conviction, best setup ever)
+
+BE HONEST with confidence - it determines real money on the line!
+- 1-3: Weak setup, structure unclear, far from levels
+- 4-6: Decent setup but some concerns
+- 7-8: Clean setup, aligned indicators, good entry
+- 9-10: PERFECT setup, everything aligned, near key level, strong structure
+
 **Analyze:**
 - Look at Supertrend direction, MA positions, structure (BOS/CHoCH)
 - Check distances to key levels - best entries are NEAR support/resistance
 - Consider the risk/reward honestly
-- Would YOU take this trade with your own money?
+- Would YOU take this trade with your own money? How much?
 
 Format your response as JSON (but make the "opinion" field sound like a pro talking to another pro):
 {
   "opinion": "Your conversational opinion as one trader to another",
   "recommendation": "ENTER" | "WAIT" | "SKIP" | "EXIT",
-  "confidence": 1-10,
+  "confidence": 1-10 (THIS DETERMINES POSITION SIZE!),
   "keyPoints": ["brief point1", "brief point2", "brief point3"],
   "riskLevel": "LOW" | "MEDIUM" | "HIGH",
-  "suggestedRisk": 0.5,
   "watchSuggestion": "watch btc near sma200" or null (suggest if WAIT)
 }`;
 
 export interface TradeOpinion {
   opinion: string;
   recommendation: 'ENTER' | 'WAIT' | 'SKIP' | 'EXIT';
-  confidence: number;
+  confidence: number;           // 1-10
+  suggestedRiskPercent: number; // 5-50% (calculated from confidence)
   keyPoints: string[];
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
-  suggestedRisk: number;
   watchSuggestion?: string | null;
+}
+
+/**
+ * Calculate risk % based on confidence score
+ * Confidence 1 = 5%
+ * Confidence 10 = 50%
+ * Linear scale: risk = 5 + (confidence - 1) * 5
+ */
+function confidenceToRisk(confidence: number): number {
+  const clampedConfidence = Math.max(1, Math.min(10, confidence));
+  // Linear: 1->5%, 10->50%
+  const risk = 5 + (clampedConfidence - 1) * 5;
+  return Math.round(risk);
 }
 
 export async function getTradeOpinion(
@@ -292,9 +316,30 @@ ${additionalContext ? `Additional Context: ${additionalContext}` : ''}
       jsonStr = jsonMatch[1];
     }
     
-    const opinion = JSON.parse(jsonStr.trim()) as TradeOpinion;
+    const rawOpinion = JSON.parse(jsonStr.trim());
     
-    logger.info({ symbol, side, opinion: opinion.recommendation }, 'Trade opinion generated');
+    // Calculate risk from confidence (1-10 → 5%-50%)
+    const confidence = rawOpinion.confidence || 5;
+    const suggestedRiskPercent = confidenceToRisk(confidence);
+    
+    const opinion: TradeOpinion = {
+      opinion: rawOpinion.opinion,
+      recommendation: rawOpinion.recommendation,
+      confidence,
+      suggestedRiskPercent,
+      keyPoints: rawOpinion.keyPoints || [],
+      riskLevel: rawOpinion.riskLevel || 'MEDIUM',
+      watchSuggestion: rawOpinion.watchSuggestion,
+    };
+    
+    logger.info({ 
+      symbol, 
+      side, 
+      recommendation: opinion.recommendation,
+      confidence,
+      riskPercent: suggestedRiskPercent,
+    }, 'Trade opinion generated');
+    
     return opinion;
     
   } catch (error) {
@@ -302,10 +347,10 @@ ${additionalContext ? `Additional Context: ${additionalContext}` : ''}
     return {
       opinion: 'Unable to analyze at this time. Check your indicators manually.',
       recommendation: 'WAIT',
-      confidence: 0,
+      confidence: 1,
+      suggestedRiskPercent: 5, // Minimum risk when error
       keyPoints: ['LLM analysis unavailable'],
       riskLevel: 'HIGH',
-      suggestedRisk: 0.25,
     };
   }
 }
