@@ -53,7 +53,7 @@ IMPORTANT: Respond ONLY with valid JSON, no markdown, no explanation.
 
 Parse the user's message into this JSON structure:
 {
-  "action": "ENTER_LONG" | "ENTER_SHORT" | "CLOSE" | "CLOSE_PARTIAL" | "MOVE_SL" | "PAUSE" | "RESUME" | "INFO" | "OPINION" | "UNKNOWN",
+  "action": "ENTER_LONG" | "ENTER_SHORT" | "CLOSE" | "CLOSE_PARTIAL" | "MOVE_SL" | "PAUSE" | "RESUME" | "INFO" | "OPINION" | "WATCH_CREATE" | "WATCH_CANCEL" | "UNKNOWN",
   "symbol": "BTCUSDT" | "ETHUSDT" | etc (add USDT if missing),
   "riskPercent": number (0.1-5, default 0.5),
   "leverage": number (1-10, default 5),
@@ -64,6 +64,11 @@ Parse the user's message into this JSON structure:
   "trailMode": "SUPERTREND" | "STRUCTURE" | "NONE",
   "closePercent": number (for partial close),
   "newSlPrice": number | null (for MOVE_SL, 0 = breakeven),
+  "watchTarget": "sma200" | "ema1000" | "supertrend" | null (for WATCH_CREATE),
+  "threshold": number (distance % for watch trigger, default 0.5),
+  "expiryMinutes": number (watch expiry, default 120),
+  "autoEnter": boolean (auto-enter when watch triggers),
+  "side": "LONG" | "SHORT" (intended trade side for watch),
   "confidence": number (0-1, how confident you are in parsing),
   "clarification": string | null (if you need more info)
 }
@@ -76,6 +81,13 @@ Examples:
 - "what do you think about btc?" → action: OPINION, symbol: BTCUSDT
 - "pause trading" → action: PAUSE
 - "how's my position?" → action: INFO
+- "watch btc near sma200" → action: WATCH_CREATE, symbol: BTCUSDT, watchTarget: "sma200", side: "LONG"
+- "scan eth closer to ema1000 for short" → action: WATCH_CREATE, symbol: ETHUSDT, watchTarget: "ema1000", side: "SHORT"
+- "alert me when btc gets to supertrend" → action: WATCH_CREATE, symbol: BTCUSDT, watchTarget: "supertrend"
+- "watch sol near ma 0.3%" → action: WATCH_CREATE, symbol: SOLUSDT, watchTarget: "sma200", threshold: 0.3
+- "watch btc 4 hours auto enter" → action: WATCH_CREATE, symbol: BTCUSDT, expiryMinutes: 240, autoEnter: true
+- "cancel watch btc" → action: WATCH_CANCEL, symbol: BTCUSDT
+- "cancel all watches" → action: WATCH_CANCEL
 
 Symbol aliases: BTC=BTCUSDT, ETH=ETHUSDT, SOL=SOLUSDT, etc.`;
 
@@ -91,6 +103,14 @@ export interface ParsedIntent {
   trailMode?: string;
   closePercent?: number;
   newSlPrice?: number;
+  // Watch/Scanner fields
+  watchTarget?: 'sma200' | 'ema1000' | 'supertrend';
+  threshold?: number;
+  expiryMinutes?: number;
+  autoEnter?: boolean;
+  side?: 'LONG' | 'SHORT';
+  watchId?: string;
+  // Meta
   confidence: number;
   clarification?: string;
 }

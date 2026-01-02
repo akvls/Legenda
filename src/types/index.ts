@@ -153,6 +153,7 @@ export interface Intent {
   rawText: string;
   action: IntentAction;
   symbol?: string;
+  side?: TradeSide;  // for watch commands
   riskPercent?: number;
   requestedLeverage?: number;
   slRule?: SLRule;

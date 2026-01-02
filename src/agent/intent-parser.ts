@@ -104,15 +104,32 @@ export function parseIntent(rawText: string): Intent | null {
 function detectAction(words: string[]): IntentAction | null {
   const text = words.join(' ');
 
+  // Watch/Scanner actions - check first (takes priority)
+  if (
+    words.includes('watch') || 
+    words.includes('scan') || 
+    words.includes('scanner') ||
+    words.includes('alert') ||
+    (text.includes('wait') && (text.includes('closer') || text.includes('near')))
+  ) {
+    if (words.includes('cancel') || words.includes('stop') || words.includes('remove')) {
+      return 'WATCH_CANCEL';
+    }
+    if (words.includes('snooze')) {
+      return 'WATCH_SNOOZE';
+    }
+    return 'WATCH_CREATE';
+  }
+
   // Entry actions
   if (words.includes('long') || words.includes('buy')) {
-    if (text.includes('wait') || text.includes('watch')) {
+    if (text.includes('wait') || text.includes('until')) {
       return 'WATCH_CREATE';
     }
     return 'ENTER_LONG';
   }
   if (words.includes('short') || words.includes('sell')) {
-    if (text.includes('wait') || text.includes('watch')) {
+    if (text.includes('wait') || text.includes('until')) {
       return 'WATCH_CREATE';
     }
     return 'ENTER_SHORT';
@@ -132,19 +149,11 @@ function detectAction(words: string[]): IntentAction | null {
   }
 
   // Pause/Resume
-  if (words.includes('pause') || words.includes('stop')) {
+  if (words.includes('pause')) {
     return 'PAUSE';
   }
   if (words.includes('resume') || words.includes('start')) {
     return 'RESUME';
-  }
-
-  // Watch actions
-  if (words.includes('cancel') && (words.includes('watch') || words.includes('alert'))) {
-    return 'WATCH_CANCEL';
-  }
-  if (words.includes('snooze')) {
-    return 'WATCH_SNOOZE';
   }
 
   return null;
@@ -227,24 +236,51 @@ function parseMoveSlIntent(words: string[], intent: Intent): void {
 function parseWatchIntent(words: string[], intent: Intent): void {
   intent.symbol = extractSymbol(words);
   
-  // Determine intended side
-  if (words.includes('long') || words.includes('buy')) {
-    intent.action = 'WATCH_CREATE';
-  }
-  if (words.includes('short') || words.includes('sell')) {
-    intent.action = 'WATCH_CREATE';
-  }
-
-  // Check for "closer to MA" trigger
   const text = words.join(' ');
-  if (text.includes('closer') || text.includes('ma') || text.includes('near')) {
-    intent.watchTrigger = {
-      type: 'CLOSER_TO_MA' as WatchTriggerType,
-      thresholdPct: extractNumber(words, ['%', 'pct', 'percent']) ?? DEFAULTS.watchThresholdPct,
-    };
+  
+  // Determine intended side
+  intent.side = words.includes('short') || words.includes('sell') ? 'SHORT' : 'LONG';
+
+  // Determine watch target
+  let watchTarget: WatchTriggerType = 'CLOSER_TO_SMA200';
+  if (text.includes('ema') || text.includes('1000')) {
+    watchTarget = 'CLOSER_TO_EMA1000';
+  } else if (text.includes('supertrend') || text.includes('super') || text.includes('st')) {
+    watchTarget = 'CLOSER_TO_SUPERTREND';
+  } else if (text.includes('sma') || text.includes('200') || text.includes('ma')) {
+    watchTarget = 'CLOSER_TO_SMA200';
   }
 
-  // Copy entry params
+  // Extract threshold
+  const threshold = extractNumber(words, ['%', 'pct', 'percent', 'threshold']) ?? DEFAULTS.watchThresholdPct;
+
+  // Extract expiry in minutes
+  let expiryMinutes = 120; // default 2 hours
+  if (text.includes('1h') || text.includes('1 hour')) expiryMinutes = 60;
+  if (text.includes('4h') || text.includes('4 hour')) expiryMinutes = 240;
+  if (text.includes('8h') || text.includes('8 hour')) expiryMinutes = 480;
+  if (text.includes('12h') || text.includes('12 hour')) expiryMinutes = 720;
+  if (text.includes('24h') || text.includes('1 day')) expiryMinutes = 1440;
+  const customMinutes = extractNumber(words, ['min', 'minute']);
+  if (customMinutes) expiryMinutes = customMinutes;
+  const customHours = extractNumber(words, ['hour', 'hr']);
+  if (customHours) expiryMinutes = customHours * 60;
+
+  // Check for auto-enter
+  const autoEnter = text.includes('auto') || text.includes('enter') || text.includes('execute');
+
+  intent.watchTrigger = {
+    type: watchTarget,
+    thresholdPct: threshold,
+  };
+
+  // Store additional watch params in intent for the orchestrator
+  (intent as any).watchTarget = watchTarget;
+  (intent as any).threshold = threshold;
+  (intent as any).expiryMinutes = expiryMinutes;
+  (intent as any).autoEnter = autoEnter;
+
+  // Copy entry params (for auto-enter)
   intent.riskPercent = extractNumber(words, ['risk', 'r']) ?? DEFAULTS.riskPercent;
   intent.slRule = extractSlRule(words);
   intent.trailMode = extractTrailMode(words);

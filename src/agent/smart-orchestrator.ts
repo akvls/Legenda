@@ -22,7 +22,8 @@ import {
 } from './llm-service.js';
 import { memoryManager, type MemorySummary } from './memory.js';
 import { circuitBreaker } from './circuit-breaker.js';
-import type { Intent, TradeSide, IntentAction } from '../types/index.js';
+import { getWatchManager, type WatchRule } from './watch-manager.js';
+import type { Intent, TradeSide, IntentAction, WatchTriggerType, WatchMode } from '../types/index.js';
 
 const logger = createLogger('smart-orchestrator');
 
@@ -151,9 +152,141 @@ export class SmartOrchestrator {
       case 'INFO':
         return this.handleInfo(parsedIntent.symbol);
 
+      case 'WATCH_CREATE':
+        return this.handleWatchCreate(parsedIntent);
+
+      case 'WATCH_CANCEL':
+        return this.handleWatchCancel(parsedIntent);
+
       default:
         return this.handleConversation(rawText);
     }
+  }
+
+  /**
+   * Handle watch/scanner creation via chat
+   */
+  private async handleWatchCreate(parsed: any): Promise<SmartResponse> {
+    const symbol = parsed.symbol || 'BTCUSDT';
+    const side: TradeSide = parsed.side || 'LONG';
+    
+    // Determine trigger type from parsed intent
+    let triggerType: WatchTriggerType = 'CLOSER_TO_SMA200';
+    const target = (parsed.watchTarget || '').toLowerCase();
+    
+    if (target.includes('ema') || target.includes('1000')) {
+      triggerType = 'CLOSER_TO_EMA1000';
+    } else if (target.includes('super') || target.includes('trend')) {
+      triggerType = 'CLOSER_TO_SUPERTREND';
+    } else if (target.includes('sma') || target.includes('200')) {
+      triggerType = 'CLOSER_TO_SMA200';
+    }
+    
+    const threshold = parsed.threshold || 0.5;
+    const mode: WatchMode = parsed.autoEnter ? 'AUTO_ENTER' : 'NOTIFY_ONLY';
+    const expiryMinutes = parsed.expiryMinutes || 120;
+    
+    const watchManager = getWatchManager();
+    const watch = watchManager.createWatch({
+      symbol,
+      intendedSide: side,
+      triggerType,
+      thresholdPercent: threshold,
+      mode,
+      expiryMinutes,
+      preset: {
+        riskPercent: parsed.riskPercent || 0.5,
+        slRule: parsed.slRule || 'SWING',
+        trailMode: parsed.trailMode || 'SUPERTREND',
+      },
+    });
+
+    // Get current distance
+    const distance = await watchManager.getCurrentDistance(symbol, triggerType);
+    const distanceInfo = distance 
+      ? `Current distance: ${distance.distance.toFixed(2)}% (threshold: ${threshold}%)`
+      : '';
+
+    const targetLabel = {
+      'CLOSER_TO_SMA200': 'SMA200',
+      'CLOSER_TO_EMA1000': 'EMA1000',
+      'CLOSER_TO_SUPERTREND': 'Supertrend',
+      'PRICE_ABOVE': 'Price Above',
+      'PRICE_BELOW': 'Price Below',
+    }[triggerType];
+
+    const expiryHours = Math.round(expiryMinutes / 60 * 10) / 10;
+    const modeLabel = mode === 'AUTO_ENTER' ? '🚀 Auto-enter when triggered' : '🔔 Notify only';
+
+    const response = `👁️ **Watch Created!**
+
+📊 **${symbol}** - ${side} near ${targetLabel}
+🎯 Threshold: ${threshold}%
+${distanceInfo}
+⏰ Expires in: ${expiryHours} hours
+${modeLabel}
+
+I'll alert you when price gets within ${threshold}% of ${targetLabel}. ${mode === 'AUTO_ENTER' ? `Then I'll automatically enter ${side} with ${parsed.riskPercent || 0.5}% risk.` : 'You decide when to enter.'}`;
+
+    memoryManager.addMessage('assistant', response);
+
+    return {
+      success: true,
+      message: response,
+      type: 'info',
+      data: { watch },
+    };
+  }
+
+  /**
+   * Handle watch cancellation via chat
+   */
+  private async handleWatchCancel(parsed: any): Promise<SmartResponse> {
+    const watchManager = getWatchManager();
+    
+    // If specific watch ID provided
+    if (parsed.watchId) {
+      const success = watchManager.cancelWatch(parsed.watchId);
+      if (success) {
+        return {
+          success: true,
+          message: '✅ Watch cancelled.',
+          type: 'info',
+        };
+      }
+      return {
+        success: false,
+        message: '❌ Watch not found or already inactive.',
+        type: 'error',
+      };
+    }
+    
+    // Cancel all watches for symbol
+    const symbol = parsed.symbol?.toUpperCase();
+    if (symbol) {
+      const watches = watchManager.getWatchesForSymbol(symbol);
+      let cancelled = 0;
+      for (const watch of watches) {
+        if (watchManager.cancelWatch(watch.id)) cancelled++;
+      }
+      return {
+        success: true,
+        message: `✅ Cancelled ${cancelled} watch(es) for ${symbol}`,
+        type: 'info',
+      };
+    }
+    
+    // Cancel all watches
+    const allWatches = watchManager.getActiveWatches();
+    let cancelled = 0;
+    for (const watch of allWatches) {
+      if (watchManager.cancelWatch(watch.id)) cancelled++;
+    }
+    return {
+      success: true,
+      message: `✅ Cancelled all ${cancelled} active watch(es)`,
+      type: 'info',
+    };
   }
 
   /**
