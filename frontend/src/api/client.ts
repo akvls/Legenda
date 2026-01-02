@@ -44,7 +44,7 @@ export const execution = {
 
 // Market endpoints
 export const market = {
-  wallet: () => fetchApi<WalletResponse>('/market/wallet'),
+  wallet: () => fetchApi<WalletResponse>('/market/balance'),
   price: (symbol: string) => fetchApi<PriceResponse>(`/market/price/${symbol}`),
 }
 
@@ -149,7 +149,7 @@ export interface StrategyState {
 
 export interface PositionsResponse {
   success: boolean
-  positions: Position[]
+  data: Position[]
 }
 
 export interface Position {
@@ -178,7 +178,7 @@ export interface Order {
 
 export interface WalletResponse {
   success: boolean
-  wallet: {
+  data: {
     totalEquity: number
     availableBalance: number
     usedMargin: number

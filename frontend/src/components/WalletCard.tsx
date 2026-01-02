@@ -3,7 +3,7 @@ import { Wallet, AlertTriangle } from 'lucide-react'
 import { market, agent, type WalletResponse, type CircuitBreakerStatus } from '../api/client'
 
 export default function WalletCard() {
-  const [wallet, setWallet] = useState<WalletResponse['wallet'] | null>(null)
+  const [wallet, setWallet] = useState<WalletResponse['data'] | null>(null)
   const [circuitBreaker, setCircuitBreaker] = useState<CircuitBreakerStatus | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -14,7 +14,7 @@ export default function WalletCard() {
           market.wallet(),
           agent.circuitBreaker(),
         ])
-        setWallet(walletRes.wallet)
+        setWallet(walletRes.data)
         setCircuitBreaker(cbRes)
       } catch (error) {
         console.error('Failed to fetch wallet:', error)

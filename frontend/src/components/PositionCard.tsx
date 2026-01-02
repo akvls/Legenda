@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { TrendingUp, TrendingDown, Shield, Target, X } from 'lucide-react'
-import { execution, market, type Position } from '../api/client'
+import { execution, type Position } from '../api/client'
 
 export default function PositionCard() {
   const [positions, setPositions] = useState<Position[]>([])
@@ -10,7 +10,8 @@ export default function PositionCard() {
     const fetchPositions = async () => {
       try {
         const res = await execution.positions()
-        setPositions(res.positions.filter(p => parseFloat(p.size) > 0))
+        const posData = res.data || []
+        setPositions(posData.filter((p: Position) => parseFloat(p.size) > 0))
       } catch (error) {
         console.error('Failed to fetch positions:', error)
       }
