@@ -165,8 +165,23 @@ You're talking to a fellow experienced trader as an equal, not a student.
 - If the setup is clean, get excited about it
 - Keep it conversational, 2-3 sentences for the opinion
 
+**Strategy Rules You Follow:**
+1. LONG only when: Price above Supertrend (UP) + above SMA200 + above EMA1000
+2. SHORT only when: Price below Supertrend (DOWN) + below SMA200 + below EMA1000
+3. BOS (Break of Structure) = continuation signal
+4. CHoCH (Change of Character) = reversal warning
+5. Protected swing = your stop loss area (if broken, trade invalid)
+6. Best entries: Near Supertrend edge OR near MA support/resistance
+
+**When to Recommend WAIT + WATCH:**
+- Price too far from key levels (>2% from Supertrend, SMA, or EMA)
+- Structure just broke (wait for retest)
+- Near protected swing (risky entry)
+→ Suggest: "Set a WATCH for when price gets closer to [SMA200/EMA1000/Supertrend]"
+
 **Analyze:**
-- Look at Supertrend direction, MA positions, structure
+- Look at Supertrend direction, MA positions, structure (BOS/CHoCH)
+- Check distances to key levels - best entries are NEAR support/resistance
 - Consider the risk/reward honestly
 - Would YOU take this trade with your own money?
 
@@ -177,7 +192,8 @@ Format your response as JSON (but make the "opinion" field sound like a pro talk
   "confidence": 1-10,
   "keyPoints": ["brief point1", "brief point2", "brief point3"],
   "riskLevel": "LOW" | "MEDIUM" | "HIGH",
-  "suggestedRisk": 0.5
+  "suggestedRisk": 0.5,
+  "watchSuggestion": "watch btc near sma200" or null (suggest if WAIT)
 }`;
 
 export interface TradeOpinion {
@@ -187,6 +203,7 @@ export interface TradeOpinion {
   keyPoints: string[];
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
   suggestedRisk: number;
+  watchSuggestion?: string | null;
 }
 
 export async function getTradeOpinion(
@@ -199,29 +216,64 @@ export async function getTradeOpinion(
   try {
     const model = getModel();
     
+    // Format BOS/CHoCH info
+    const lastBOS = strategyState.snapshot.lastBOS;
+    const lastCHoCH = strategyState.snapshot.lastCHoCH;
+    const bosInfo = lastBOS 
+      ? `Last BOS: ${lastBOS.direction} at ${lastBOS.level?.toFixed(2) || 'N/A'}` 
+      : 'No recent BOS';
+    const chochInfo = lastCHoCH 
+      ? `Last CHoCH: ${lastCHoCH.direction} at ${lastCHoCH.level?.toFixed(2) || 'N/A'} ⚠️ REVERSAL SIGNAL` 
+      : 'No recent CHoCH';
+
     const marketContext = `
 Symbol: ${symbol}
 Current Price: ${currentPrice}
 Intended Side: ${side || 'Not specified - asking for general opinion'}
 
-Strategy State:
-- Bias: ${strategyState.bias}
+=== STRATEGY GATE ===
+- Current Bias: ${strategyState.bias}
 - Strategy Active: ${strategyState.strategyId || 'None'}
-- Allow Long: ${strategyState.allowLongEntry}
-- Allow Short: ${strategyState.allowShortEntry}
+- LONG Allowed: ${strategyState.allowLongEntry ? '✅ YES' : '❌ NO'}
+- SHORT Allowed: ${strategyState.allowShortEntry ? '✅ YES' : '❌ NO'}
 
-Indicators:
-- Supertrend: ${strategyState.snapshot.supertrendDir} @ ${strategyState.snapshot.supertrendValue.toFixed(2)}
-- Price vs Supertrend: ${currentPrice > strategyState.snapshot.supertrendValue ? 'ABOVE' : 'BELOW'}
-- SMA200: ${strategyState.snapshot.sma200.toFixed(2)} (${strategyState.snapshot.closeAboveSma200 ? 'Price ABOVE' : 'Price BELOW'})
-- EMA1000: ${strategyState.snapshot.ema1000.toFixed(2)} (${strategyState.snapshot.closeAboveEma1000 ? 'Price ABOVE' : 'Price BELOW'})
+=== INDICATORS ===
+Supertrend:
+- Direction: ${strategyState.snapshot.supertrendDir}
+- Value: ${strategyState.snapshot.supertrendValue.toFixed(2)}
+- Distance from price: ${strategyState.snapshot.distanceToSupertrend?.toFixed(2) || 'N/A'}%
+- Price is ${currentPrice > strategyState.snapshot.supertrendValue ? 'ABOVE ✅' : 'BELOW ⬇️'} Supertrend
+
+SMA 200:
+- Value: ${strategyState.snapshot.sma200.toFixed(2)}
+- Distance from price: ${strategyState.snapshot.distanceToSma200?.toFixed(2) || 'N/A'}%
+- Price is ${strategyState.snapshot.closeAboveSma200 ? 'ABOVE ✅' : 'BELOW ⬇️'} SMA200
+
+EMA 1000:
+- Value: ${strategyState.snapshot.ema1000.toFixed(2)}
+- Distance from price: ${strategyState.snapshot.distanceToEma1000?.toFixed(2) || 'N/A'}%
+- Price is ${strategyState.snapshot.closeAboveEma1000 ? 'ABOVE ✅' : 'BELOW ⬇️'} EMA1000
+
+=== MARKET STRUCTURE ===
 - Structure Bias: ${strategyState.snapshot.structureBias}
+- Current Trend: ${strategyState.snapshot.currentTrend || 'N/A'}
+- ${bosInfo}
+- ${chochInfo}
 
-Key Levels:
-- Protected Swing High: ${strategyState.keyLevels.protectedSwingHigh}
-- Protected Swing Low: ${strategyState.keyLevels.protectedSwingLow}
-- Last Swing High: ${strategyState.keyLevels.lastSwingHigh}
-- Last Swing Low: ${strategyState.keyLevels.lastSwingLow}
+=== KEY SWING LEVELS ===
+- Protected Swing High: ${strategyState.keyLevels.protectedSwingHigh?.toFixed(2) || 'N/A'}
+- Protected Swing Low: ${strategyState.keyLevels.protectedSwingLow?.toFixed(2) || 'N/A'}
+- Last Swing High: ${strategyState.keyLevels.lastSwingHigh?.toFixed(2) || 'N/A'}
+- Last Swing Low: ${strategyState.keyLevels.lastSwingLow?.toFixed(2) || 'N/A'}
+- Distance to Swing High: ${strategyState.snapshot.distanceToSwingHigh?.toFixed(2) || 'N/A'}%
+- Distance to Swing Low: ${strategyState.snapshot.distanceToSwingLow?.toFixed(2) || 'N/A'}%
+${strategyState.snapshot.protectedLevel ? `- Protected Level (SL area): ${strategyState.snapshot.protectedLevel.toFixed(2)} (${strategyState.snapshot.distanceToProtectedLevel?.toFixed(2)}% away)` : ''}
+
+=== ENTRY QUALITY CHECK ===
+${Math.abs(strategyState.snapshot.distanceToSupertrend || 0) < 1 ? '✅ Near Supertrend edge - GOOD entry zone' : '⚠️ Far from Supertrend - consider waiting'}
+${Math.abs(strategyState.snapshot.distanceToSma200 || 0) < 1 ? '✅ Near SMA200 - strong level' : ''}
+${Math.abs(strategyState.snapshot.distanceToEma1000 || 0) < 1 ? '✅ Near EMA1000 - strong level' : ''}
+${lastCHoCH ? '⚠️ Recent CHoCH detected - potential reversal, be cautious' : ''}
 
 ${additionalContext ? `Additional Context: ${additionalContext}` : ''}
 `;
@@ -371,6 +423,29 @@ const CHAT_SYSTEM_PROMPT = `You are **Legenda** - the most legendary day trader 
 - Friendly colleague vibe - like two pros having coffee and discussing setups
 - Occasionally shares battle scars from your past to connect
 
+**Strategy Knowledge You Have:**
+1. LONG entries: Supertrend UP + Price > SMA200 + Price > EMA1000
+2. SHORT entries: Supertrend DOWN + Price < SMA200 + Price < EMA1000
+3. BOS (Break of Structure) = trend continuation, good signal
+4. CHoCH (Change of Character) = potential reversal, be careful!
+5. Best entries are NEAR key levels (Supertrend edge, SMA200, EMA1000)
+6. If price too far from levels, WAIT and set a WATCH
+7. Protected swing = stop loss zone. If broken = exit trade
+
+**Commands You Can Suggest:**
+- "watch BTC near sma200" - Set alert when price approaches level
+- "watch ETH near supertrend 0.5%" - Alert at specific distance
+- "watch SOL near ema1000 4 hours" - Watch with expiry
+- "long BTC risk 0.5" - Enter long position
+- "close BTC" - Exit position
+- "pause" / "resume" - Stop/start trading
+
+**When to Suggest a Watch:**
+- Price far from key levels (>1-2%)
+- Waiting for better entry
+- Structure needs confirmation
+- Say: "Set a watch, let price come to us"
+
 **How You Talk:**
 - NEVER say "kid" or talk down - they're experienced traders too
 - Use: "Here's how I see it...", "My read on this...", "Between us..."
@@ -380,6 +455,7 @@ const CHAT_SYSTEM_PROMPT = `You are **Legenda** - the most legendary day trader 
 - Celebrate wins, commiserate losses - you've been there
 - Keep it conversational, 2-4 sentences usually
 - Use trading wisdom naturally: "The market will always be here tomorrow"
+- SUGGEST WATCHES when appropriate: "Let's set a watch for when price gets closer"
 
 Remember: You're not a mentor to beginners. You're Legenda talking to a fellow experienced trader as an equal.`;
 
