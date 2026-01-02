@@ -1,5 +1,6 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import path from 'path';
 import { apiLogger as logger } from '../utils/logger.js';
 
 // Routes
@@ -20,8 +21,8 @@ export function createApp() {
   app.use(cors());
   app.use(express.json());
   
-  // Request logging
-  app.use((req: Request, _res: Response, next: NextFunction) => {
+  // Request logging (only for API routes)
+  app.use('/api', (req: Request, _res: Response, next: NextFunction) => {
     logger.debug({ method: req.method, path: req.path }, 'Request');
     next();
   });
@@ -34,18 +35,22 @@ export function createApp() {
   app.use('/api/execution', executionRoutes);
   app.use('/api/agent', agentRoutes);
 
-  // Root endpoint
-  app.get('/', (_req: Request, res: Response) => {
-    res.json({
-      name: 'AI Trading Assistant API',
-      version: '1.0.0',
-      status: 'running',
-    });
+  // Serve frontend static files (production build)
+  const frontendPath = path.join(process.cwd(), 'frontend/dist');
+  app.use(express.static(frontendPath));
+
+  // SPA fallback - serve index.html for all non-API routes
+  app.get('*', (req: Request, res: Response, next: NextFunction) => {
+    // Skip if it's an API route
+    if (req.path.startsWith('/api')) {
+      return next();
+    }
+    res.sendFile(path.join(frontendPath, 'index.html'));
   });
 
-  // 404 handler
-  app.use((_req: Request, res: Response) => {
-    res.status(404).json({ success: false, error: 'Not found' });
+  // 404 handler for API routes
+  app.use('/api/*', (_req: Request, res: Response) => {
+    res.status(404).json({ success: false, error: 'API endpoint not found' });
   });
 
   // Error handler

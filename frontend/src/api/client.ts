@@ -1,4 +1,5 @@
-const API_BASE = 'http://localhost:3001/api'
+// Use relative path - works whether served from same origin or different
+const API_BASE = '/api'
 
 export async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${endpoint}`, {
