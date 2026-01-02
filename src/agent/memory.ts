@@ -193,6 +193,11 @@ class ShortTermMemory {
     return this.currentSession.messages.slice(-count);
   }
 
+  getAllMessages(): ChatMessage[] {
+    if (!this.currentSession) return [];
+    return this.currentSession.messages;
+  }
+
   getSessionContext(): string {
     const recent = this.getRecentMessages(10);
     if (recent.length === 0) return '';
@@ -441,6 +446,13 @@ export class MemoryManager {
    */
   getRecentMessages(count: number = 20): ChatMessage[] {
     return this.shortTerm.getRecentMessages(count);
+  }
+
+  /**
+   * Get all messages from current session
+   */
+  getAllMessages(): ChatMessage[] {
+    return this.shortTerm.getAllMessages();
   }
 
   /**

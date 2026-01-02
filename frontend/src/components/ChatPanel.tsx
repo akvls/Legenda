@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Send, Bot, User, Loader2 } from 'lucide-react'
+import { Send, Bot, User, Loader2, Trash2 } from 'lucide-react'
 import { agent } from '../api/client'
 
 interface Message {
@@ -14,11 +14,35 @@ export default function ChatPanel() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [historyLoaded, setHistoryLoaded] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
+
+  // Load chat history on mount
+  useEffect(() => {
+    const loadHistory = async () => {
+      try {
+        const response = await agent.chatHistory()
+        if (response.success && response.messages.length > 0) {
+          const loadedMessages: Message[] = response.messages.map((m, i) => ({
+            id: `history-${i}`,
+            role: m.role,
+            content: m.content,
+            timestamp: new Date(m.timestamp),
+          }))
+          setMessages(loadedMessages)
+        }
+      } catch (error) {
+        console.error('Failed to load chat history:', error)
+      } finally {
+        setHistoryLoaded(true)
+      }
+    }
+    loadHistory()
+  }, [])
 
   useEffect(() => {
     scrollToBottom()
@@ -80,17 +104,44 @@ export default function ChatPanel() {
     }
   }
 
+  const clearChat = async () => {
+    try {
+      await agent.clearChat()
+      setMessages([])
+    } catch (error) {
+      console.error('Failed to clear chat:', error)
+    }
+  }
+
   return (
     <div className="h-full flex flex-col bg-dark-800 rounded-xl border border-dark-600">
       {/* Header */}
-      <div className="px-4 py-3 border-b border-dark-600">
-        <h2 className="text-sm font-medium text-zinc-300">Command Center</h2>
-        <p className="text-xs text-zinc-500">Type commands like "long BTC 1%" or ask questions</p>
+      <div className="px-4 py-3 border-b border-dark-600 flex justify-between items-start">
+        <div>
+          <h2 className="text-sm font-medium text-zinc-300">Command Center</h2>
+          <p className="text-xs text-zinc-500">Type commands like "long BTC 1%" or ask questions</p>
+        </div>
+        {messages.length > 0 && (
+          <button
+            onClick={clearChat}
+            className="p-1.5 hover:bg-dark-600 rounded-lg transition-colors text-zinc-500 hover:text-red-400"
+            title="Clear chat (archives to memory)"
+          >
+            <Trash2 size={14} />
+          </button>
+        )}
       </div>
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        {messages.length === 0 && (
+        {!historyLoaded && (
+          <div className="text-center text-zinc-500 text-sm py-8">
+            <Loader2 size={24} className="mx-auto mb-2 animate-spin opacity-50" />
+            <p>Loading chat history...</p>
+          </div>
+        )}
+        
+        {historyLoaded && messages.length === 0 && (
           <div className="text-center text-zinc-500 text-sm py-8">
             <Bot size={32} className="mx-auto mb-2 opacity-50" />
             <p>Start by typing a command</p>

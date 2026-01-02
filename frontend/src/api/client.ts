@@ -24,11 +24,23 @@ export const agent = {
     method: 'POST',
     body: JSON.stringify({ message }),
   }),
+  chatHistory: () => fetchApi<ChatHistoryResponse>('/agent/memory/messages'),
+  clearChat: () => fetchApi<{ success: boolean }>('/agent/memory/clear', { method: 'POST' }),
   opinion: (symbol: string) => fetchApi<OpinionResponse>(`/agent/opinion/${symbol}`, {
     method: 'POST',
   }),
   journal: () => fetchApi<JournalResponse>('/agent/journal'),
   circuitBreaker: () => fetchApi<CircuitBreakerStatus>('/agent/circuit-breaker'),
+}
+
+export interface ChatHistoryResponse {
+  success: boolean
+  count: number
+  messages: Array<{
+    role: 'user' | 'assistant'
+    content: string
+    timestamp: number
+  }>
 }
 
 // Strategy endpoints

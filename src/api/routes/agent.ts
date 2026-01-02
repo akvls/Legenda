@@ -132,6 +132,27 @@ router.get('/memory', (_req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/agent/memory/messages
+ * Get all chat messages from current session
+ */
+router.get('/memory/messages', (_req: Request, res: Response) => {
+  try {
+    const messages = smartOrchestrator.getChatHistory();
+    
+    return res.json({
+      success: true,
+      count: messages.length,
+      messages,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: (error as Error).message,
+    });
+  }
+});
+
+/**
  * POST /api/agent/memory/clear
  * Clear current session (archives it first)
  */

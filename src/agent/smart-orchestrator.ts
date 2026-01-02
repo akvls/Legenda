@@ -896,6 +896,13 @@ I'll alert you when price gets within ${threshold}% of ${targetLabel}. ${mode ==
   }
 
   /**
+   * Get all chat messages from current session
+   */
+  getChatHistory() {
+    return memoryManager.getAllMessages();
+  }
+
+  /**
    * Clear current chat session (archives to long-term)
    */
   clearChatSession(): void {
