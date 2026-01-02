@@ -1,0 +1,417 @@
+// Prisma Schema for AI Trading Assistant
+// Run: npx prisma generate && npx prisma db push
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// NOTE: SQLite doesn't support enums
+// We use String fields with validation in code
+// Valid values documented in comments
+// ============================================
+
+// ============================================
+// CORE TABLES
+// ============================================
+
+model Settings {
+  id                    String   @id @default("default")
+  maxLeverage           Int      @default(10)
+  defaultLeverage       Int      @default(5)
+  defaultRiskPercent    Float    @default(0.5)
+  defaultSlRule         String   @default("SWING")       // SWING | SUPERTREND | PRICE | NONE
+  defaultTpRule         String   @default("NONE")        // NONE | RR | PRICE | STRUCTURE
+  defaultTrailMode      String   @default("SUPERTREND")  // SUPERTREND | STRUCTURE | NONE
+  watchDefaultThreshold Float    @default(0.2)
+  watchDefaultExpiryMin Int      @default(120)
+  coachStrictness       Int      @default(1)
+  autoExitOnInvalidation Boolean @default(true)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+model SymbolConfig {
+  id               String   @id @default(cuid())
+  symbol           String   @unique
+  timeframe        String   @default("5m")
+  supertrendPeriod Int      @default(5)
+  supertrendMult   Float    @default(8.0)
+  sma200Period     Int      @default(200)
+  ema1000Period    Int      @default(1000)
+  swingLookback    Int      @default(5)
+  enabled          Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Relations
+  trades         Trade[]
+  orders         Order[]
+  watchRules     WatchRule[]
+  events         Event[]
+  strategyStates StrategyState[]
+  tradeStates    SymbolTradeState[]
+}
+
+model SymbolTradeState {
+  id            String   @id @default(cuid())
+  symbol        String   @unique
+  state         String   @default("FLAT") // FLAT | IN_LONG | IN_SHORT | EXITING | LOCK_LONG | LOCK_SHORT | PAUSED
+  activeTradeId String?
+  lockedAt      DateTime?
+  lockReason    String?
+  pausedAt      DateTime?
+  pauseReason   String?
+  updatedAt     DateTime @updatedAt
+
+  symbolConfig SymbolConfig @relation(fields: [symbol], references: [symbol])
+  activeTrade  Trade?       @relation("ActiveTrade", fields: [activeTradeId], references: [id])
+}
+
+// ============================================
+// STRATEGY STATE (Snapshots)
+// ============================================
+
+model StrategyState {
+  id              String   @id @default(cuid())
+  symbol          String
+  timeframe       String
+  timestamp       DateTime
+  candleCloseTime DateTime
+
+  // Core bias
+  bias            String  // LONG | SHORT | NEUTRAL
+  allowLongEntry  Boolean
+  allowShortEntry Boolean
+  strategyId      String? // S101 | S102 | S103
+
+  // Supertrend
+  supertrendDir   String // LONG | SHORT | NEUTRAL
+  supertrendValue Float
+
+  // Moving Averages
+  sma200Value       Float
+  ema1000Value      Float
+  closeAboveSma200  Boolean
+  closeBelowSma200  Boolean
+  closeAboveEma1000 Boolean
+  closeBelowEma1000 Boolean
+
+  // Structure
+  structureBias      String // BULLISH | BEARISH | NEUTRAL
+  protectedSwingLow  Float?
+  protectedSwingHigh Float?
+  lastSwingLow       Float?
+  lastSwingHigh      Float?
+
+  // Price info
+  closePrice Float
+
+  createdAt DateTime @default(now())
+
+  symbolConfig SymbolConfig @relation(fields: [symbol], references: [symbol])
+
+  @@index([symbol, timestamp])
+  @@index([symbol, candleCloseTime])
+}
+
+// ============================================
+// TRADES
+// ============================================
+
+model Trade {
+  id         String @id @default(cuid())
+  symbol     String
+  side       String // LONG | SHORT
+  timeframe  String
+  strategyId String // S101 | S102 | S103
+
+  // Entry details
+  entryType         String @default("MARKET") // MARKET | LIMIT
+  riskPercent       Float
+  riskAmountUsdt    Float
+  requestedLeverage Int
+  appliedLeverage   Int
+
+  // SL/TP/Trail config
+  slRule      String  // SWING | SUPERTREND | PRICE | NONE
+  slPrice     Float?
+  tpRule      String  // NONE | RR | PRICE | STRUCTURE
+  tpPrice     Float?
+  trailMode   String  // SUPERTREND | STRUCTURE | NONE
+  trailActive Boolean @default(false)
+
+  // Invalidation rules (stored as JSON string)
+  invalidationRules String // JSON: { biasFlip: true, structureBreak: true, supertrendFlip: true }
+
+  // Execution
+  entryPrice    Float?
+  entryFilledAt DateTime?
+  entrySize     Float?
+  entrySizeUsdt Float?
+
+  exitPrice    Float?
+  exitFilledAt DateTime?
+  exitReason   String? // STOP_LOSS | TAKE_PROFIT | TRAIL_STOP | INVALIDATION_* | MANUAL_CLOSE | EMERGENCY_FLATTEN
+
+  // P&L
+  realizedPnl        Float?
+  realizedPnlPercent Float?
+  rMultiple          Float?
+  fees               Float?
+  funding            Float?
+
+  // MFE/MAE
+  mfePrice   Float?
+  mfePercent Float?
+  maePrice   Float?
+  maePercent Float?
+
+  // Scores
+  aiScore   Int?
+  userScore Int?
+
+  // User input
+  userRawCommand String?
+  userNote       String?
+  userTags       String? // JSON array as string: ["tag1", "tag2"]
+
+  // Strategy snapshot (JSON strings)
+  strategySnapshotAtEntry String?
+  strategySnapshotAtExit  String?
+
+  // Timestamps
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  closedAt  DateTime?
+
+  // Relations
+  symbolConfig   SymbolConfig       @relation(fields: [symbol], references: [symbol])
+  orders         Order[]
+  fills          Fill[]
+  events         Event[]
+  activeForState SymbolTradeState[] @relation("ActiveTrade")
+
+  @@index([symbol, createdAt])
+  @@index([side, createdAt])
+  @@index([strategyId, createdAt])
+}
+
+// ============================================
+// ORDERS
+// ============================================
+
+model Order {
+  id     String @id @default(cuid())
+  symbol String
+  tradeId String?
+
+  // Bybit order info
+  bybitOrderId     String? @unique
+  bybitOrderLinkId String?
+
+  // Order details
+  side       String  // LONG | SHORT
+  orderType  String  // MARKET | LIMIT
+  price      Float?
+  size       Float
+  sizeUsdt   Float?
+  reduceOnly Boolean @default(false)
+
+  // Status
+  status       String @default("PENDING") // PENDING | OPEN | PARTIALLY_FILLED | FILLED | CANCELLED | REJECTED
+  filledSize   Float  @default(0)
+  avgFillPrice Float?
+
+  // Purpose
+  isEntry      Boolean @default(false)
+  isExit       Boolean @default(false)
+  isStopLoss   Boolean @default(false)
+  isTakeProfit Boolean @default(false)
+  isTrailStop  Boolean @default(false)
+
+  // Timestamps
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  filledAt    DateTime?
+  cancelledAt DateTime?
+
+  // Error tracking
+  errorCode    String?
+  errorMessage String?
+
+  // Relations
+  symbolConfig SymbolConfig @relation(fields: [symbol], references: [symbol])
+  trade        Trade?       @relation(fields: [tradeId], references: [id])
+  fills        Fill[]
+
+  @@index([symbol, createdAt])
+  @@index([bybitOrderId])
+  @@index([tradeId])
+}
+
+// ============================================
+// FILLS
+// ============================================
+
+model Fill {
+  id      String @id @default(cuid())
+  orderId String
+  tradeId String?
+
+  // Bybit fill info
+  bybitExecId String? @unique
+
+  // Fill details
+  price    Float
+  size     Float
+  sizeUsdt Float?
+  fee      Float
+  feeAsset String?
+
+  // Timestamps
+  filledAt  DateTime
+  createdAt DateTime @default(now())
+
+  // Relations
+  order Order  @relation(fields: [orderId], references: [id])
+  trade Trade? @relation(fields: [tradeId], references: [id])
+
+  @@index([orderId])
+  @@index([tradeId])
+}
+
+// ============================================
+// WATCH RULES (Scanner)
+// ============================================
+
+model WatchRule {
+  id           String @id @default(cuid())
+  symbol       String
+  intendedSide String // LONG | SHORT
+
+  // Trigger
+  triggerType  String // CLOSER_TO_MA
+  thresholdPct Float
+
+  // Expiry
+  expiresAt DateTime
+
+  // Mode
+  mode             String  @default("NOTIFY_ONLY") // NOTIFY_ONLY | AUTO_ENTER
+  requiresHardGate Boolean @default(true)
+
+  // Preset entry config
+  presetRiskPercent Float?
+  presetSlRule      String? // SWING | SUPERTREND | PRICE | NONE
+  presetTrailMode   String? // SUPERTREND | STRUCTURE | NONE
+  presetLeverage    Int?
+
+  // Status
+  triggered   Boolean   @default(false)
+  triggeredAt DateTime?
+  cancelled   Boolean   @default(false)
+  cancelledAt DateTime?
+  expired     Boolean   @default(false)
+
+  // Result
+  resultTradeId     String?
+  resultBlocked     Boolean?
+  resultBlockReason String?
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  symbolConfig SymbolConfig @relation(fields: [symbol], references: [symbol])
+
+  @@index([symbol, triggered, expired, cancelled])
+  @@index([expiresAt])
+}
+
+// ============================================
+// EVENT LOG (Audit Trail)
+// ============================================
+
+model Event {
+  id      String  @id @default(cuid())
+  symbol  String?
+  tradeId String?
+
+  eventType String // ENTRY_REQUESTED | ENTRY_BLOCKED_* | ENTRY_PLACED | etc.
+
+  // Payload (JSON string)
+  payload String?
+
+  // Human readable
+  message String?
+
+  // Timestamps
+  timestamp DateTime @default(now())
+
+  // Relations
+  symbolConfig SymbolConfig? @relation(fields: [symbol], references: [symbol])
+  trade        Trade?        @relation(fields: [tradeId], references: [id])
+
+  @@index([symbol, timestamp])
+  @@index([tradeId, timestamp])
+  @@index([eventType, timestamp])
+}
+
+// ============================================
+// CANDLES (for local storage/caching)
+// ============================================
+
+model Candle {
+  id        String   @id @default(cuid())
+  symbol    String
+  timeframe String
+  openTime  DateTime
+  closeTime DateTime
+  open      Float
+  high      Float
+  low       Float
+  close     Float
+  volume    Float
+
+  createdAt DateTime @default(now())
+
+  @@unique([symbol, timeframe, openTime])
+  @@index([symbol, timeframe, openTime])
+}
+
+// ============================================
+// DAILY STATS (for analytics)
+// ============================================
+
+model DailyStats {
+  id   String   @id @default(cuid())
+  date DateTime
+
+  totalTrades   Int @default(0)
+  winningTrades Int @default(0)
+  losingTrades  Int @default(0)
+
+  totalPnl Float @default(0)
+  totalR   Float @default(0)
+
+  longsCount  Int @default(0)
+  shortsCount Int @default(0)
+
+  blockedEntries    Int @default(0)
+  invalidationExits Int @default(0)
+
+  bestSymbol  String?
+  worstSymbol String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([date])
+}
