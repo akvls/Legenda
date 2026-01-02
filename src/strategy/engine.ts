@@ -272,12 +272,15 @@ export class StrategyEngine extends EventEmitter<StrategyEngineEvents> {
   /**
    * Evaluate which strategy conditions are met
    * Returns the best matching strategy ID
+   * 
+   * NOTE: Structure is NOT used for blocking - it's advisory only (shown in UI, used by LLM)
+   * Only Supertrend + MAs determine entry permission
    */
   private evaluateStrategies(
     stDir: Bias,
     sma200: { priceAbove: boolean; priceBelow: boolean },
     ema1000: { priceAbove: boolean; priceBelow: boolean },
-    structureBias: StructureBias
+    _structureBias: StructureBias // Kept for logging but NOT used for blocking
   ): { strategyId: StrategyId | null; allowLongEntry: boolean; allowShortEntry: boolean } {
     
     // HARD RULE: Supertrend determines allowed direction
@@ -293,37 +296,28 @@ export class StrategyEngine extends EventEmitter<StrategyEngineEvents> {
     let allowShortEntry = stDir === 'SHORT';
 
     // Evaluate strategies in priority order (101 > 102 > 103)
+    // Structure is ADVISORY ONLY - not used for blocking
     let strategyId: StrategyId | null = null;
 
-    // Strategy 101: ST + SMA200 aligned (Conservative)
-    if (stDir === 'LONG' && sma200.priceAbove && structureBias !== 'BEARISH') {
+    // Strategy 101: ST + SMA200 aligned (Best quality)
+    if (stDir === 'LONG' && sma200.priceAbove) {
       strategyId = 'S101';
-    } else if (stDir === 'SHORT' && sma200.priceBelow && structureBias !== 'BULLISH') {
+    } else if (stDir === 'SHORT' && sma200.priceBelow) {
       strategyId = 'S101';
     }
     
-    // Strategy 102: ST + EMA1000 aligned (Stronger filter)
+    // Strategy 102: ST + EMA1000 aligned (Good quality)
     if (!strategyId) {
-      if (stDir === 'LONG' && ema1000.priceAbove && structureBias !== 'BEARISH') {
+      if (stDir === 'LONG' && ema1000.priceAbove) {
         strategyId = 'S102';
-      } else if (stDir === 'SHORT' && ema1000.priceBelow && structureBias !== 'BULLISH') {
+      } else if (stDir === 'SHORT' && ema1000.priceBelow) {
         strategyId = 'S102';
       }
     }
 
-    // Strategy 103: ST-only (Risky/Aggressive)
+    // Strategy 103: ST-only (Aggressive - MAs not aligned)
     if (!strategyId) {
-      if (stDir === 'LONG' && structureBias !== 'BEARISH') {
-        strategyId = 'S103';
-      } else if (stDir === 'SHORT' && structureBias !== 'BULLISH') {
-        strategyId = 'S103';
-      }
-    }
-
-    // If no strategy matches, block entry
-    if (!strategyId) {
-      allowLongEntry = false;
-      allowShortEntry = false;
+      strategyId = 'S103';
     }
 
     return { strategyId, allowLongEntry, allowShortEntry };
