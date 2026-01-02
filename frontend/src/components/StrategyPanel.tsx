@@ -129,6 +129,45 @@ export default function StrategyPanel({ symbol = 'BTCUSDT' }: StrategyPanelProps
         </div>
       </div>
 
+      {/* Market Structure (Advisory) */}
+      <div className="px-4 py-3 border-b border-dark-600">
+        <div className="text-xs text-zinc-500 mb-2">Market Structure <span className="text-zinc-600">(advisory)</span></div>
+        
+        <div className="flex items-center gap-3 mb-2">
+          <span className={`
+            text-sm font-medium px-2 py-1 rounded
+            ${state.snapshot.structureBias === 'BULLISH' ? 'bg-accent-green/20 text-accent-green' : 
+              state.snapshot.structureBias === 'BEARISH' ? 'bg-accent-red/20 text-accent-red' : 
+              'bg-dark-600 text-zinc-400'}
+          `}>
+            {state.snapshot.structureBias}
+          </span>
+          <span className="text-xs text-zinc-500">
+            {state.snapshot.currentTrend}
+          </span>
+        </div>
+
+        {/* Last BOS */}
+        {state.snapshot.lastBOS && (
+          <div className="flex items-center justify-between text-xs mb-1">
+            <span className="text-zinc-500">Last BOS</span>
+            <span className={state.snapshot.lastBOS.direction === 'BULLISH' ? 'text-accent-green' : 'text-accent-red'}>
+              {state.snapshot.lastBOS.direction} @ ${state.snapshot.lastBOS.level.toFixed(0)}
+            </span>
+          </div>
+        )}
+
+        {/* Last CHoCH */}
+        {state.snapshot.lastCHoCH && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-zinc-500">Last CHoCH</span>
+            <span className={state.snapshot.lastCHoCH.direction === 'BULLISH' ? 'text-accent-green' : 'text-accent-red'}>
+              {state.snapshot.lastCHoCH.direction} @ ${state.snapshot.lastCHoCH.level.toFixed(0)}
+            </span>
+          </div>
+        )}
+      </div>
+
       {/* Distances */}
       <div className="px-4 py-3 space-y-2">
         <div className="text-xs text-zinc-500 mb-2">Distance from Price</div>

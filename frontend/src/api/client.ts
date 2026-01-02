@@ -140,6 +140,23 @@ export interface StrategyState {
     distanceToSwingLow: number | null
     currentTrend: string
     structureBias: string
+    // Structure events (advisory)
+    lastBOS: {
+      type: string
+      direction: 'BULLISH' | 'BEARISH'
+      level: number
+      candleIndex: number
+      openTime: number
+    } | null
+    lastCHoCH: {
+      type: string
+      direction: 'BULLISH' | 'BEARISH'
+      level: number
+      candleIndex: number
+      openTime: number
+    } | null
+    protectedLevel: number | null
+    distanceToProtectedLevel: number | null
   }
 }
 
