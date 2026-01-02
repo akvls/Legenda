@@ -7,4 +7,5 @@ export * from './order-manager.js';
 export * from './trade-executor.js';
 export * from './trailing-manager.js';
 export * from './sl-manager.js';
+export * from './invalidation-manager.js';
 

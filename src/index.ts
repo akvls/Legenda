@@ -11,6 +11,7 @@ import { getPositionTracker } from './execution/position-tracker.js';
 import { getTradeExecutor } from './execution/trade-executor.js';
 import { getTrailingManager } from './execution/trailing-manager.js';
 import { getSLManager } from './execution/sl-manager.js';
+import { getInvalidationManager } from './execution/invalidation-manager.js';
 import { smartOrchestrator } from './agent/smart-orchestrator.js';
 
 /**
@@ -44,6 +45,16 @@ async function main() {
     const tradeExecutor = getTradeExecutor();
     const trailingManager = getTrailingManager();
     const slManager = getSLManager();
+    const invalidationManager = getInvalidationManager();
+    
+    // Log swing break events (hard exits)
+    invalidationManager.on('swingBreak', (symbol, side, price, swingLevel) => {
+      logger.warn({ symbol, side, price, swingLevel }, '🚨 SWING BREAK - Hard exit triggered');
+    });
+    
+    invalidationManager.on('autoExit', (symbol, reason) => {
+      logger.info({ symbol, reason }, '✅ Auto-exit completed');
+    });
     
     // Initialize position tracker (fetch current positions)
     await positionTracker.initialize();
