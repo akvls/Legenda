@@ -69,14 +69,10 @@ export interface AgentStatus {
 
 export interface ChatResponse {
   success: boolean
-  response: {
-    success: boolean
-    message: string
-    type: string
-    data?: any
-    opinion?: any
-    timestamp: number
-  }
+  message: string
+  type: string
+  data?: any
+  opinion?: any
 }
 
 export interface OpinionResponse {

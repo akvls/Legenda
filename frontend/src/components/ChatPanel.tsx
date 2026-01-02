@@ -44,9 +44,9 @@ export default function ChatPanel() {
       const assistantMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: response.response.message,
+        content: response.message,
         timestamp: new Date(),
-        type: response.response.type,
+        type: response.type,
       }
 
       setMessages(prev => [...prev, assistantMessage])
