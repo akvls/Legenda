@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { smartOrchestrator, stateMachine, isLLMAvailable } from '../../agent/index.js';
+import { smartOrchestrator, stateMachine, isLLMAvailable, getWatchManager } from '../../agent/index.js';
+import type { WatchTriggerType, WatchMode, TradeSide } from '../../types/index.js';
 import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('api:agent');
@@ -452,6 +453,294 @@ router.post('/be/:symbol', async (req: Request, res: Response) => {
       success: result.success,
       message: result.message,
       data: result.data,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: (error as Error).message,
+    });
+  }
+});
+
+/**
+ * ========================================
+ * WATCH/SCANNER ROUTES
+ * ========================================
+ */
+
+/**
+ * GET /api/agent/watches
+ * Get all active watches
+ */
+router.get('/watches', (_req: Request, res: Response) => {
+  try {
+    const watchManager = getWatchManager();
+    const watches = watchManager.getActiveWatches();
+    
+    return res.json({
+      success: true,
+      count: watches.length,
+      watches,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: (error as Error).message,
+    });
+  }
+});
+
+/**
+ * GET /api/agent/watches/:symbol
+ * Get watches for a specific symbol
+ */
+router.get('/watches/:symbol', (req: Request, res: Response) => {
+  try {
+    const { symbol } = req.params;
+    const watchManager = getWatchManager();
+    const watches = watchManager.getWatchesForSymbol(symbol.toUpperCase());
+    
+    return res.json({
+      success: true,
+      symbol: symbol.toUpperCase(),
+      count: watches.length,
+      watches,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: (error as Error).message,
+    });
+  }
+});
+
+/**
+ * POST /api/agent/watch
+ * Create a new watch
+ * 
+ * Body:
+ *   - symbol: "BTCUSDT"
+ *   - side: "LONG" | "SHORT"
+ *   - triggerType: "CLOSER_TO_SMA200" | "CLOSER_TO_EMA1000" | "CLOSER_TO_SUPERTREND" | "PRICE_ABOVE" | "PRICE_BELOW"
+ *   - threshold?: 0.5 (percent, default 0.5%)
+ *   - targetPrice?: 95000 (for PRICE_ABOVE/PRICE_BELOW)
+ *   - mode?: "NOTIFY_ONLY" | "AUTO_ENTER"
+ *   - expiryMinutes?: 120 (default 2 hours)
+ *   - preset?: { riskPercent, slRule, trailMode }
+ */
+router.post('/watch', (req: Request, res: Response) => {
+  try {
+    const { 
+      symbol, 
+      side, 
+      triggerType, 
+      threshold, 
+      targetPrice,
+      mode,
+      expiryMinutes,
+      preset,
+    } = req.body;
+    
+    if (!symbol || !side || !triggerType) {
+      return res.status(400).json({
+        success: false,
+        error: 'symbol, side, and triggerType are required',
+      });
+    }
+    
+    const validTriggers = ['CLOSER_TO_SMA200', 'CLOSER_TO_EMA1000', 'CLOSER_TO_SUPERTREND', 'PRICE_ABOVE', 'PRICE_BELOW'];
+    if (!validTriggers.includes(triggerType)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid triggerType. Use: ${validTriggers.join(', ')}`,
+      });
+    }
+    
+    const watchManager = getWatchManager();
+    const watch = watchManager.createWatch({
+      symbol: symbol.toUpperCase(),
+      intendedSide: side.toUpperCase() as TradeSide,
+      triggerType: triggerType as WatchTriggerType,
+      thresholdPercent: threshold,
+      targetPrice,
+      mode: mode as WatchMode,
+      expiryMinutes,
+      preset,
+    });
+    
+    return res.json({
+      success: true,
+      message: `👁️ Watch created for ${symbol} - ${triggerType}`,
+      watch,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: (error as Error).message,
+    });
+  }
+});
+
+/**
+ * DELETE /api/agent/watch/:id
+ * Cancel a watch
+ */
+router.delete('/watch/:id', (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const watchManager = getWatchManager();
+    const success = watchManager.cancelWatch(id);
+    
+    if (!success) {
+      return res.status(404).json({
+        success: false,
+        error: 'Watch not found or already inactive',
+      });
+    }
+    
+    return res.json({
+      success: true,
+      message: '✅ Watch cancelled',
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: (error as Error).message,
+    });
+  }
+});
+
+/**
+ * GET /api/agent/distance/:symbol/:type
+ * Get current distance from price to a target
+ * type: sma200, ema1000, supertrend
+ */
+router.get('/distance/:symbol/:type', async (req: Request, res: Response) => {
+  try {
+    const { symbol, type } = req.params;
+    
+    const typeMap: Record<string, WatchTriggerType> = {
+      sma200: 'CLOSER_TO_SMA200',
+      ema1000: 'CLOSER_TO_EMA1000',
+      supertrend: 'CLOSER_TO_SUPERTREND',
+    };
+    
+    const triggerType = typeMap[type.toLowerCase()];
+    if (!triggerType) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid type. Use: sma200, ema1000, supertrend',
+      });
+    }
+    
+    const watchManager = getWatchManager();
+    const result = await watchManager.getCurrentDistance(symbol.toUpperCase(), triggerType);
+    
+    if (!result) {
+      return res.status(404).json({
+        success: false,
+        error: 'Symbol not found or no strategy data',
+      });
+    }
+    
+    return res.json({
+      success: true,
+      symbol: symbol.toUpperCase(),
+      type,
+      currentPrice: result.price,
+      targetPrice: result.targetPrice,
+      distancePercent: result.distance,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: (error as Error).message,
+    });
+  }
+});
+
+/**
+ * Convenience endpoints for common watches
+ */
+
+// POST /api/agent/watch/sma200/:symbol
+router.post('/watch/sma200/:symbol', (req: Request, res: Response) => {
+  try {
+    const { symbol } = req.params;
+    const { side = 'LONG', threshold = 0.5, mode = 'NOTIFY_ONLY', expiryMinutes = 120 } = req.body;
+    
+    const watchManager = getWatchManager();
+    const watch = watchManager.createWatch({
+      symbol: symbol.toUpperCase(),
+      intendedSide: side.toUpperCase() as TradeSide,
+      triggerType: 'CLOSER_TO_SMA200',
+      thresholdPercent: threshold,
+      mode: mode as WatchMode,
+      expiryMinutes,
+    });
+    
+    return res.json({
+      success: true,
+      message: `👁️ Watching ${symbol} to get within ${threshold}% of SMA200`,
+      watch,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: (error as Error).message,
+    });
+  }
+});
+
+// POST /api/agent/watch/ema1000/:symbol
+router.post('/watch/ema1000/:symbol', (req: Request, res: Response) => {
+  try {
+    const { symbol } = req.params;
+    const { side = 'LONG', threshold = 0.5, mode = 'NOTIFY_ONLY', expiryMinutes = 120 } = req.body;
+    
+    const watchManager = getWatchManager();
+    const watch = watchManager.createWatch({
+      symbol: symbol.toUpperCase(),
+      intendedSide: side.toUpperCase() as TradeSide,
+      triggerType: 'CLOSER_TO_EMA1000',
+      thresholdPercent: threshold,
+      mode: mode as WatchMode,
+      expiryMinutes,
+    });
+    
+    return res.json({
+      success: true,
+      message: `👁️ Watching ${symbol} to get within ${threshold}% of EMA1000`,
+      watch,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: (error as Error).message,
+    });
+  }
+});
+
+// POST /api/agent/watch/supertrend/:symbol
+router.post('/watch/supertrend/:symbol', (req: Request, res: Response) => {
+  try {
+    const { symbol } = req.params;
+    const { side = 'LONG', threshold = 0.5, mode = 'NOTIFY_ONLY', expiryMinutes = 120 } = req.body;
+    
+    const watchManager = getWatchManager();
+    const watch = watchManager.createWatch({
+      symbol: symbol.toUpperCase(),
+      intendedSide: side.toUpperCase() as TradeSide,
+      triggerType: 'CLOSER_TO_SUPERTREND',
+      thresholdPercent: threshold,
+      mode: mode as WatchMode,
+      expiryMinutes,
+    });
+    
+    return res.json({
+      success: true,
+      message: `👁️ Watching ${symbol} to get within ${threshold}% of Supertrend edge`,
+      watch,
     });
   } catch (error) {
     return res.status(500).json({

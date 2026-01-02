@@ -35,7 +35,12 @@ export type ExitReason =
   | 'MANUAL_CLOSE'
   | 'EMERGENCY_FLATTEN';
 
-export type WatchTriggerType = 'CLOSER_TO_MA';
+export type WatchTriggerType = 
+  | 'CLOSER_TO_SMA200'
+  | 'CLOSER_TO_EMA1000'
+  | 'CLOSER_TO_SUPERTREND'
+  | 'PRICE_ABOVE'
+  | 'PRICE_BELOW';
 export type WatchMode = 'NOTIFY_ONLY' | 'AUTO_ENTER';
 
 export type StrategyId = 'S101' | 'S102' | 'S103';
