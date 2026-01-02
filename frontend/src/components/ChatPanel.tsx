@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect } from 'react'
 import { Send, Bot, User, Loader2, Trash2 } from 'lucide-react'
 import { agent } from '../api/client'
 
@@ -8,6 +8,110 @@ interface Message {
   content: string
   timestamp: Date
   type?: string
+}
+
+/**
+ * Format message with colors and bold text
+ */
+function formatMessage(content: string): React.ReactNode {
+  // Split by lines to process each line
+  const lines = content.split('\n')
+  
+  return (
+    <div className="space-y-1">
+      {lines.map((line, i) => (
+        <div key={i}>{formatLine(line)}</div>
+      ))}
+    </div>
+  )
+}
+
+function formatLine(line: string): React.ReactNode {
+  // Process bold markers **text**
+  const parts: React.ReactNode[] = []
+  let key = 0
+  
+  // Pattern to match **bold** text
+  const boldRegex = /\*\*([^*]+)\*\*/g
+  let lastIndex = 0
+  let match
+  
+  while ((match = boldRegex.exec(line)) !== null) {
+    // Add text before the match
+    if (match.index > lastIndex) {
+      parts.push(
+        <span key={key++}>
+          {colorizeText(line.slice(lastIndex, match.index))}
+        </span>
+      )
+    }
+    // Add the bold text
+    parts.push(
+      <strong key={key++} className="font-bold text-white">
+        {colorizeText(match[1])}
+      </strong>
+    )
+    lastIndex = match.index + match[0].length
+  }
+  
+  // Add remaining text
+  if (lastIndex < line.length) {
+    parts.push(
+      <span key={key++}>
+        {colorizeText(line.slice(lastIndex))}
+      </span>
+    )
+  }
+  
+  if (parts.length === 0) {
+    return <span>{colorizeText(line)}</span>
+  }
+  
+  return <>{parts}</>
+}
+
+function colorizeText(text: string): React.ReactNode {
+  // Color keywords
+  const colorMap: Record<string, string> = {
+    'ENTER': 'text-emerald-400 font-semibold',
+    'WAIT': 'text-amber-400 font-semibold',
+    'SKIP': 'text-red-400 font-semibold',
+    'EXIT': 'text-red-400 font-semibold',
+    'LONG': 'text-emerald-400 font-semibold',
+    'SHORT': 'text-red-400 font-semibold',
+    'HIGH': 'text-red-400 font-semibold',
+    'MEDIUM': 'text-amber-400 font-semibold',
+    'LOW': 'text-emerald-400 font-semibold',
+    'BULLISH': 'text-emerald-400 font-semibold',
+    'BEARISH': 'text-red-400 font-semibold',
+    'BOS': 'text-blue-400 font-semibold',
+    'CHoCH': 'text-purple-400 font-semibold',
+    '✅': 'text-emerald-400',
+    '❌': 'text-red-400',
+    '⚠️': 'text-amber-400',
+    '🎯': 'text-blue-400',
+    '💰': 'text-amber-400',
+    '📊': 'text-blue-400',
+    '💡': 'text-yellow-400',
+  }
+  
+  // Build regex from keywords
+  const keywords = Object.keys(colorMap).map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  const regex = new RegExp(`(${keywords.join('|')})`, 'g')
+  
+  const parts = text.split(regex)
+  
+  return (
+    <>
+      {parts.map((part, i) => {
+        const colorClass = colorMap[part]
+        if (colorClass) {
+          return <span key={i} className={colorClass}>{part}</span>
+        }
+        return <span key={i}>{part}</span>
+      })}
+    </>
+  )
 }
 
 export default function ChatPanel() {
@@ -162,15 +266,18 @@ export default function ChatPanel() {
             
             <div
               className={`
-                max-w-[85%] px-5 py-3 rounded-2xl text-base leading-relaxed
+                max-w-[85%] px-5 py-4 rounded-2xl text-[15px] leading-relaxed
                 ${msg.role === 'user' 
                   ? 'bg-accent-blue/20 text-zinc-100' 
-                  : `bg-dark-700 text-zinc-200 border-l-3 ${getMessageStyle(msg.type)}`
+                  : `bg-dark-700/80 text-zinc-300 border-l-4 ${getMessageStyle(msg.type)}`
                 }
               `}
             >
-              <pre className="whitespace-pre-wrap font-sans text-[15px]">{msg.content}</pre>
-              <span className="text-xs text-zinc-500 mt-2 block">
+              {msg.role === 'assistant' 
+                ? formatMessage(msg.content)
+                : <span>{msg.content}</span>
+              }
+              <span className="text-xs text-zinc-600 mt-3 block">
                 {msg.timestamp.toLocaleTimeString()}
               </span>
             </div>
