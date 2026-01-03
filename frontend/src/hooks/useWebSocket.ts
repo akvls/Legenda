@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 
 interface WSMessage {
-  type: 'position' | 'strategy' | 'price' | 'ticker' | 'circuitBreaker' | 'watch' | 'trade' | 'trailUpdate' | 'pong'
+  type: 'position' | 'strategy' | 'price' | 'ticker' | 'circuitBreaker' | 'watch' | 'trade' | 'trailUpdate' | 'legendaAdvice' | 'pong'
   data: any
   timestamp: number
 }
@@ -291,5 +291,42 @@ export function useTrailUpdates() {
   }, [subscribe])
 
   return { trailData, isConnected }
+}
+
+// Legenda's advice (hourly check-ins, position close feedback)
+export interface LegendaAdvice {
+  adviceType: 'HOURLY_CHECKIN' | 'POSITION_CLOSED'
+  symbol: string
+  message: string
+  pnl?: number
+  isWin?: boolean
+  position?: {
+    side: string
+    pnl: number
+    pnlPercent: number
+  }
+  wallet24hChange?: number
+  timestamp: number
+}
+
+export function useLegendaAdvice() {
+  const [latestAdvice, setLatestAdvice] = useState<LegendaAdvice | null>(null)
+  const [adviceHistory, setAdviceHistory] = useState<LegendaAdvice[]>([])
+  const { subscribe, isConnected } = useWebSocket()
+
+  useEffect(() => {
+    return subscribe('legendaAdvice', (msg) => {
+      const advice: LegendaAdvice = {
+        ...msg.data,
+        timestamp: msg.timestamp
+      }
+      setLatestAdvice(advice)
+      setAdviceHistory(prev => [advice, ...prev].slice(0, 20)) // Keep last 20
+    })
+  }, [subscribe])
+
+  const clearLatest = () => setLatestAdvice(null)
+
+  return { latestAdvice, adviceHistory, clearLatest, isConnected }
 }
 

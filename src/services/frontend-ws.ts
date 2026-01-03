@@ -7,6 +7,8 @@ import { getMarketWebSocket } from '../bybit/market-ws.js';
 import { getSLManager } from '../execution/sl-manager.js';
 import { getTradeExecutor } from '../execution/trade-executor.js';
 import { smartOrchestrator } from '../agent/smart-orchestrator.js';
+import { getHourlyCheckin, getPositionCloseFeedback, type HourlyCheckinData, type PositionCloseData } from '../agent/llm-service.js';
+import { getWalletBalance } from '../bybit/rest-client.js';
 
 /**
  * WebSocket server for frontend real-time updates
@@ -14,7 +16,7 @@ import { smartOrchestrator } from '../agent/smart-orchestrator.js';
  */
 
 interface WSMessage {
-  type: 'position' | 'strategy' | 'price' | 'ticker' | 'circuitBreaker' | 'watch' | 'trade' | 'trailUpdate' | 'ping';
+  type: 'position' | 'strategy' | 'price' | 'ticker' | 'circuitBreaker' | 'watch' | 'trade' | 'trailUpdate' | 'legendaAdvice' | 'ping';
   data: any;
   timestamp: number;
 }
@@ -28,9 +30,17 @@ const positionSymbols = new Map<string, number>();
 // Cleanup interval: 24 hours
 const SYMBOL_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
+// Hourly check-in interval: 1 hour
+const HOURLY_CHECKIN_INTERVAL_MS = 60 * 60 * 1000;
+
+// Track wallet balance for 24hr performance
+let walletBalance24hAgo: number | null = null;
+let walletBalanceHistory: { time: number; balance: number }[] = [];
+
 let wss: WebSocketServer | null = null;
 const clients = new Set<WebSocket>();
 let cleanupInterval: ReturnType<typeof setInterval> | null = null;
+let hourlyCheckinInterval: ReturnType<typeof setInterval> | null = null;
 
 /**
  * Initialize WebSocket server on existing HTTP server
@@ -96,6 +106,9 @@ export function initFrontendWebSocket(server: Server): void {
       }
     });
   }, 60 * 60 * 1000); // Check every hour
+
+  // Start Legenda's hourly check-in for open positions
+  startHourlyCheckin();
 
   logger.info('Frontend WebSocket server initialized on /ws');
 }
@@ -223,7 +236,7 @@ function setupEventListeners(): void {
     positionSymbols.set(position.symbol, Date.now());
   });
 
-  positionTracker.on('positionClosed', (symbol, side, realizedPnl) => {
+  positionTracker.on('positionClosed', async (symbol, side, realizedPnl) => {
     broadcast({
       type: 'position',
       data: { closed: { symbol, side, realizedPnl } },
@@ -232,6 +245,44 @@ function setupEventListeners(): void {
     
     // Keep tracking for cleanup - will be removed after 24h of no activity
     positionSymbols.set(symbol, Date.now());
+    
+    // Get Legenda's feedback on the closed trade
+    try {
+      const executor = getTradeExecutor();
+      const trade = executor.getLastClosedTrade?.(symbol);
+      const wallet24hChange = await getWallet24hChange();
+      
+      const closeData: PositionCloseData = {
+        symbol,
+        side: side as 'LONG' | 'SHORT',
+        entryPrice: trade?.entryPrice || 0,
+        exitPrice: trade?.exitPrice || 0,
+        realizedPnl: realizedPnl || 0,
+        pnlPercent: trade?.entryPrice ? ((realizedPnl || 0) / (trade.entryPrice * (trade?.size || 1))) * 100 : 0,
+        exitReason: (trade?.exitReason as any) || 'UNKNOWN',
+        durationMinutes: trade?.createdAt ? (Date.now() - new Date(trade.createdAt).getTime()) / 60000 : 0,
+        strategyWasValid: true, // Assume valid for now
+        wallet24hChange,
+      };
+      
+      const feedback = await getPositionCloseFeedback(closeData);
+      
+      broadcast({
+        type: 'legendaAdvice',
+        data: {
+          adviceType: 'POSITION_CLOSED',
+          symbol,
+          message: feedback,
+          pnl: realizedPnl,
+          isWin: realizedPnl >= 0,
+        },
+        timestamp: Date.now(),
+      });
+      
+      logger.info({ symbol, pnl: realizedPnl }, 'Sent Legenda position close feedback');
+    } catch (error) {
+      logger.error({ error, symbol }, 'Failed to get position close feedback');
+    }
   });
 
   positionTracker.on('pnlUpdate', (symbol, pnl, pnlPercent) => {
@@ -343,9 +394,153 @@ export function getClientCount(): number {
 }
 
 /**
+ * Track wallet balance for 24hr performance
+ */
+async function trackWalletBalance(): Promise<void> {
+  try {
+    const wallet = await getWalletBalance();
+    const balance = wallet.totalEquity;
+    const now = Date.now();
+    
+    walletBalanceHistory.push({ time: now, balance });
+    
+    // Keep only last 25 hours of data
+    const cutoff = now - (25 * 60 * 60 * 1000);
+    walletBalanceHistory = walletBalanceHistory.filter(h => h.time > cutoff);
+    
+    // Set 24h ago balance
+    const target24hAgo = now - (24 * 60 * 60 * 1000);
+    const closest = walletBalanceHistory.reduce((prev, curr) => {
+      return Math.abs(curr.time - target24hAgo) < Math.abs(prev.time - target24hAgo) ? curr : prev;
+    });
+    walletBalance24hAgo = closest.balance;
+    
+  } catch (error) {
+    logger.error({ error }, 'Failed to track wallet balance');
+  }
+}
+
+/**
+ * Get wallet 24hr change percentage
+ */
+async function getWallet24hChange(): Promise<number> {
+  try {
+    const wallet = await getWalletBalance();
+    const currentBalance = wallet.totalEquity;
+    if (!walletBalance24hAgo || walletBalance24hAgo === 0) {
+      return 0;
+    }
+    return ((currentBalance - walletBalance24hAgo) / walletBalance24hAgo) * 100;
+  } catch (error) {
+    return 0;
+  }
+}
+
+/**
+ * Hourly position check-in by Legenda
+ */
+async function doHourlyCheckin(): Promise<void> {
+  const positionTracker = getPositionTracker();
+  const positions = positionTracker.getAllPositions();
+  
+  if (positions.length === 0) {
+    return; // No positions to check
+  }
+  
+  const strategyEngine = getStrategyEngine();
+  const wallet24hChange = await getWallet24hChange();
+  let currentBalance = 0;
+  try {
+    const wallet = await getWalletBalance();
+    currentBalance = wallet.totalEquity;
+  } catch (e) { /* ignore */ }
+  
+  const wallet24hPnl = walletBalance24hAgo ? currentBalance - walletBalance24hAgo : 0;
+  
+  for (const position of positions) {
+    try {
+      const strategyState = strategyEngine.getState(position.symbol);
+      if (!strategyState) continue;
+      
+      const snap = strategyState.snapshot;
+      const entryTime = position.updatedAt || Date.now();
+      const hoursInTrade = (Date.now() - entryTime) / (60 * 60 * 1000);
+      
+      // Calculate PnL percent
+      const pnlPercent = position.avgPrice > 0 
+        ? ((position.markPrice - position.avgPrice) / position.avgPrice) * 100 * (position.side === 'LONG' ? 1 : -1)
+        : 0;
+      
+      // Check if strategy still aligns with position
+      const strategyStillValid = (position.side === 'LONG' && snap.supertrendDir === 'LONG') ||
+                                  (position.side === 'SHORT' && snap.supertrendDir === 'SHORT');
+      
+      const checkinData: HourlyCheckinData = {
+        symbol: position.symbol,
+        side: position.side,
+        entryPrice: position.avgPrice,
+        currentPrice: position.markPrice || snap.price,
+        unrealizedPnl: position.unrealizedPnl,
+        pnlPercent,
+        stopLoss: position.stopLoss,
+        takeProfit: position.takeProfit,
+        hoursInTrade,
+        strategyStillValid,
+        supertrendDir: snap.supertrendDir,
+        structureBias: snap.structureBias,
+        wallet24hChange,
+        wallet24hPnl,
+      };
+      
+      const advice = await getHourlyCheckin(checkinData);
+      
+      broadcast({
+        type: 'legendaAdvice',
+        data: {
+          adviceType: 'HOURLY_CHECKIN',
+          symbol: position.symbol,
+          message: advice,
+          position: {
+            side: position.side,
+            pnl: position.unrealizedPnl,
+            pnlPercent,
+          },
+          wallet24hChange,
+        },
+        timestamp: Date.now(),
+      });
+      
+      logger.info({ symbol: position.symbol, pnl: position.unrealizedPnl.toFixed(2) }, 'Sent Legenda hourly check-in');
+      
+    } catch (error) {
+      logger.error({ error, symbol: position.symbol }, 'Failed to do hourly checkin');
+    }
+  }
+}
+
+/**
+ * Start hourly check-in interval
+ */
+function startHourlyCheckin(): void {
+  // Track wallet balance every hour
+  setInterval(trackWalletBalance, 60 * 60 * 1000);
+  trackWalletBalance(); // Initial track
+  
+  // Hourly check-in for open positions
+  hourlyCheckinInterval = setInterval(doHourlyCheckin, HOURLY_CHECKIN_INTERVAL_MS);
+  
+  logger.info('Legenda hourly check-in started');
+}
+
+/**
  * Close WebSocket server
  */
 export function closeFrontendWebSocket(): void {
+  if (hourlyCheckinInterval) {
+    clearInterval(hourlyCheckinInterval);
+    hourlyCheckinInterval = null;
+  }
+  
   if (cleanupInterval) {
     clearInterval(cleanupInterval);
     cleanupInterval = null;

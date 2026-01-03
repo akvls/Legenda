@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Send, Bot, User, Loader2, Trash2 } from 'lucide-react'
+import { Send, Bot, User, Loader2, Trash2, Sparkles, X } from 'lucide-react'
 import { agent } from '../api/client'
+import { useLegendaAdvice } from '../hooks/useWebSocket'
 
 interface Message {
   id: string
@@ -120,6 +121,26 @@ export default function ChatPanel() {
   const [loading, setLoading] = useState(false)
   const [historyLoaded, setHistoryLoaded] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  
+  // Legenda's proactive advice
+  const { latestAdvice, clearLatest } = useLegendaAdvice()
+  const [showAdvice, setShowAdvice] = useState(false)
+
+  // Show advice notification when new advice arrives
+  useEffect(() => {
+    if (latestAdvice) {
+      setShowAdvice(true)
+      // Also add as a message in chat
+      const adviceMessage: Message = {
+        id: `legenda-${Date.now()}`,
+        role: 'assistant',
+        content: `🧙 **Legenda's ${latestAdvice.adviceType === 'HOURLY_CHECKIN' ? 'Check-in' : 'Feedback'}** (${latestAdvice.symbol})\n\n${latestAdvice.message}`,
+        timestamp: new Date(latestAdvice.timestamp),
+        type: 'advice',
+      }
+      setMessages(prev => [...prev, adviceMessage])
+    }
+  }, [latestAdvice])
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -204,8 +225,14 @@ export default function ChatPanel() {
       case 'success': return 'border-l-accent-green'
       case 'error': return 'border-l-accent-red'
       case 'warning': return 'border-l-accent-amber'
+      case 'advice': return 'border-l-purple-500'
       default: return 'border-l-accent-blue'
     }
+  }
+  
+  const dismissAdvice = () => {
+    setShowAdvice(false)
+    clearLatest()
   }
 
   const clearChat = async () => {
@@ -218,7 +245,45 @@ export default function ChatPanel() {
   }
 
   return (
-    <div className="h-full flex flex-col bg-dark-800 rounded-xl border border-dark-600">
+    <div className="h-full flex flex-col bg-dark-800 rounded-xl border border-dark-600 relative">
+      {/* Legenda Advice Notification */}
+      {showAdvice && latestAdvice && (
+        <div className="absolute top-2 left-2 right-2 z-50 animate-fade-in">
+          <div className={`
+            p-4 rounded-lg border shadow-lg
+            ${latestAdvice.adviceType === 'POSITION_CLOSED' 
+              ? latestAdvice.isWin 
+                ? 'bg-accent-green/20 border-accent-green/50' 
+                : 'bg-accent-red/20 border-accent-red/50'
+              : 'bg-purple-500/20 border-purple-500/50'}
+          `}>
+            <div className="flex items-start gap-3">
+              <Sparkles size={20} className="text-purple-400 flex-shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="font-medium text-zinc-200">
+                    {latestAdvice.adviceType === 'HOURLY_CHECKIN' ? '🧙 Legenda Check-in' : '🧙 Trade Feedback'}
+                  </span>
+                  <span className="text-xs text-zinc-500">{latestAdvice.symbol}</span>
+                </div>
+                <p className="text-sm text-zinc-300 line-clamp-3">{latestAdvice.message}</p>
+                {latestAdvice.wallet24hChange !== undefined && (
+                  <p className={`text-xs mt-1 ${latestAdvice.wallet24hChange >= 0 ? 'text-accent-green' : 'text-accent-red'}`}>
+                    24h Wallet: {latestAdvice.wallet24hChange >= 0 ? '+' : ''}{latestAdvice.wallet24hChange.toFixed(2)}%
+                  </p>
+                )}
+              </div>
+              <button 
+                onClick={dismissAdvice}
+                className="text-zinc-500 hover:text-zinc-300 flex-shrink-0"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
       {/* Header */}
       <div className="px-6 py-4 border-b border-dark-600 flex justify-between items-start">
         <div>

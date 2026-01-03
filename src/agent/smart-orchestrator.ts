@@ -13,6 +13,7 @@ import eventLogger from '../services/event-logger.js';
 import {
   parseIntentWithLLM,
   getTradeOpinion,
+  getBlockedTradeWisdom,
   analyzeJournal,
   chat as llmChat,
   chatWithMemory,
@@ -391,7 +392,16 @@ I'll alert you when price gets within ${threshold}% of ${targetLabel}. ${mode ==
         stateMsg += `💡 **Options:**\n`;
         stateMsg += `• Wait for the market to give a ${allowedSide} signal\n`;
         stateMsg += `• ${allowedSide} entries are still allowed\n`;
-        stateMsg += `• The lock clears when you take an opposite trade or conditions reset`;
+        stateMsg += `• The lock clears when you take an opposite trade or conditions reset\n\n`;
+        
+        // Add Legenda's wisdom for revenge trading prevention
+        const revengeWisdoms = [
+          `🧙 **Legenda says:** "I've blown more accounts revenge trading than I care to admit. The market just took your money - don't let it take your discipline too. Walk away, come back fresh."`,
+          `🧙 **Legenda says:** "You know what separates the 10% who make it from the 90% who don't? The ability to take a loss and NOT immediately try to make it back. That's you right now. Be proud."`,
+          `🧙 **Legenda says:** "The lock exists because I coded my own pain into this system. Every revenge trade I ever took ended worse than the original loss. Trust the process."`,
+          `🧙 **Legenda says:** "Your edge isn't in this one trade - it's in the next 1000. Don't blow your statistical advantage trying to be a hero today."`,
+        ];
+        stateMsg += revengeWisdoms[Math.floor(Math.random() * revengeWisdoms.length)];
       } else if (symbolState.state === 'EXITING') {
         stateMsg += `⏳ Position is currently being closed. Wait a moment and try again.`;
       }
@@ -633,9 +643,25 @@ I'll alert you when price gets within ${threshold}% of ${targetLabel}. ${mode ==
           detailedMsg += `• Distance to Supertrend: ${snap.distanceToSupertrend.toFixed(2)}%\n`;
           detailedMsg += `• Distance to SMA200: ${snap.distanceToSma200.toFixed(2)}%\n`;
           
-          // Override note
-          detailedMsg += `\n⚠️ *These rules exist to protect you from trading against the trend. `;
-          detailedMsg += `Override is not available - the hard gate is there to keep you safe.*`;
+          // Get Legenda's wisdom to calm them down
+          try {
+            const wisdom = await getBlockedTradeWisdom(
+              symbol,
+              side,
+              result.error || result.blockReason || 'Trade blocked by rules',
+              {
+                price: snap.price,
+                supertrendDir: snap.supertrendDir,
+                structureBias: snap.structureBias,
+                bias: bias,
+                distanceToSupertrend: snap.distanceToSupertrend,
+              }
+            );
+            detailedMsg += `\n---\n🧙 **Legenda says:**\n${wisdom.message}`;
+          } catch (e) {
+            // Fallback if wisdom fails
+            detailedMsg += `\n---\n🧙 *The best trade is sometimes no trade. Wait for YOUR setup.*`;
+          }
         } else {
           detailedMsg += `${result.error || result.blockReason}`;
         }

@@ -392,6 +392,280 @@ ${additionalContext ? `Additional Context: ${additionalContext}` : ''}
 }
 
 // ============================================
+// HOURLY POSITION CHECK-IN (Proactive Advice)
+// ============================================
+
+const HOURLY_CHECKIN_PROMPT = `You are **Legenda** - a legendary trader with 30+ years of experience.
+You're checking in on your student who has an open position.
+
+Your job is to:
+1. Analyze their current position vs market conditions
+2. Give honest feedback - is the trade still valid?
+3. Suggest any adjustments (trail SL, take partial, hold, etc.)
+4. Motivate them to stay disciplined
+5. If they're up, encourage protecting profits
+6. If they're down but trade is valid, encourage patience
+
+Also consider their 24hr wallet performance - if they're on a losing streak, be extra supportive.
+
+Tone: Warm mentor, honest but encouraging. Like checking in on a friend.
+Length: 2-4 sentences. Concise and actionable.
+
+DO NOT use JSON. Just respond with your message directly as plain text.`;
+
+export interface HourlyCheckinData {
+  symbol: string;
+  side: TradeSide;
+  entryPrice: number;
+  currentPrice: number;
+  unrealizedPnl: number;
+  pnlPercent: number;
+  stopLoss: number | null;
+  takeProfit: number | null;
+  hoursInTrade: number;
+  strategyStillValid: boolean;
+  supertrendDir: string;
+  structureBias: string;
+  wallet24hChange: number; // percentage change
+  wallet24hPnl: number; // dollar change
+}
+
+export async function getHourlyCheckin(data: HourlyCheckinData): Promise<string> {
+  try {
+    if (!isLLMAvailable()) {
+      return getDefaultCheckin(data);
+    }
+
+    const model = getModel();
+    
+    const pnlStatus = data.unrealizedPnl >= 0 ? 'PROFIT' : 'LOSS';
+    const walletStatus = data.wallet24hChange >= 0 ? 'UP' : 'DOWN';
+    
+    const context = `
+Position: ${data.side} ${data.symbol}
+Entry: $${data.entryPrice.toFixed(2)}
+Current: $${data.currentPrice.toFixed(2)}
+PnL: ${data.unrealizedPnl >= 0 ? '+' : ''}$${data.unrealizedPnl.toFixed(2)} (${data.pnlPercent >= 0 ? '+' : ''}${data.pnlPercent.toFixed(2)}%)
+Time in trade: ${data.hoursInTrade.toFixed(1)} hours
+SL: ${data.stopLoss ? '$' + data.stopLoss.toFixed(2) : 'Not set'}
+TP: ${data.takeProfit ? '$' + data.takeProfit.toFixed(2) : 'Not set'}
+
+Strategy Status:
+- Supertrend: ${data.supertrendDir} ${data.supertrendDir === data.side ? '✅ aligned' : '⚠️ against position'}
+- Structure: ${data.structureBias}
+- Trade still valid: ${data.strategyStillValid ? 'YES' : 'NO - conditions changed'}
+
+Wallet 24hr Performance: ${walletStatus} ${data.wallet24hChange >= 0 ? '+' : ''}${data.wallet24hChange.toFixed(2)}% ($${data.wallet24hPnl >= 0 ? '+' : ''}${data.wallet24hPnl.toFixed(2)})
+
+Give your check-in advice.`;
+
+    const result = await model.generateContent([
+      { text: HOURLY_CHECKIN_PROMPT },
+      { text: context },
+    ]);
+
+    return result.response.text().trim();
+    
+  } catch (error) {
+    logger.error({ error }, 'Failed to get hourly checkin');
+    return getDefaultCheckin(data);
+  }
+}
+
+function getDefaultCheckin(data: HourlyCheckinData): string {
+  const pnlEmoji = data.unrealizedPnl >= 0 ? '💚' : '🔴';
+  const aligned = data.supertrendDir === data.side;
+  
+  if (data.unrealizedPnl >= 0 && aligned) {
+    return `${pnlEmoji} Looking good! You're up ${data.pnlPercent.toFixed(1)}% and strategy is still aligned. Consider trailing your SL to protect profits. Let the winner run! 🎯`;
+  } else if (data.unrealizedPnl >= 0 && !aligned) {
+    return `${pnlEmoji} You're in profit but trend is shifting. Consider taking some off the table or tightening your SL. Don't let a winner turn into a loser. 🧐`;
+  } else if (data.unrealizedPnl < 0 && aligned) {
+    return `${pnlEmoji} Down ${Math.abs(data.pnlPercent).toFixed(1)}% but setup is still valid. This is normal - give it room to work. Your SL is your protection. Stay patient. 💪`;
+  } else {
+    return `${pnlEmoji} Trade is underwater and conditions have changed. Review your thesis - does this still make sense? Consider cutting early if structure is broken. 🤔`;
+  }
+}
+
+// ============================================
+// POSITION CLOSE FEEDBACK
+// ============================================
+
+const POSITION_CLOSE_PROMPT = `You are **Legenda** - a legendary trader with 30+ years of experience.
+Your student just closed a trade. Give them feedback.
+
+Your job is to:
+1. Acknowledge the result (win or loss)
+2. Analyze what went right or wrong
+3. Give emotional support if needed
+4. Help them learn from this trade
+5. If WIN: celebrate but keep them humble
+6. If LOSS: support them, remind them it's part of the game
+
+Consider their 24hr performance - are they on a streak?
+
+Tone: Like a coach after a game. Honest, supportive, educational.
+Length: 2-4 sentences. Impactful.
+
+DO NOT use JSON. Just respond with your message directly as plain text.
+Start with an appropriate emoji.`;
+
+export interface PositionCloseData {
+  symbol: string;
+  side: TradeSide;
+  entryPrice: number;
+  exitPrice: number;
+  realizedPnl: number;
+  pnlPercent: number;
+  exitReason: 'STOP_LOSS' | 'TAKE_PROFIT' | 'MANUAL' | 'SWING_BREAK' | 'LIQUIDATION' | 'UNKNOWN';
+  durationMinutes: number;
+  strategyWasValid: boolean; // was the setup good at entry?
+  wallet24hChange: number;
+}
+
+export async function getPositionCloseFeedback(data: PositionCloseData): Promise<string> {
+  try {
+    if (!isLLMAvailable()) {
+      return getDefaultCloseFeedback(data);
+    }
+
+    const model = getModel();
+    
+    const isWin = data.realizedPnl >= 0;
+    const hours = (data.durationMinutes / 60).toFixed(1);
+    
+    const context = `
+Trade Result: ${isWin ? 'WIN' : 'LOSS'}
+Position: ${data.side} ${data.symbol}
+Entry: $${data.entryPrice.toFixed(2)}
+Exit: $${data.exitPrice.toFixed(2)}
+PnL: ${data.realizedPnl >= 0 ? '+' : ''}$${data.realizedPnl.toFixed(2)} (${data.pnlPercent >= 0 ? '+' : ''}${data.pnlPercent.toFixed(2)}%)
+Exit Reason: ${data.exitReason}
+Duration: ${hours} hours
+Setup was valid at entry: ${data.strategyWasValid ? 'YES' : 'NO'}
+
+Wallet 24hr: ${data.wallet24hChange >= 0 ? '+' : ''}${data.wallet24hChange.toFixed(2)}%
+
+Give your feedback on this trade.`;
+
+    const result = await model.generateContent([
+      { text: POSITION_CLOSE_PROMPT },
+      { text: context },
+    ]);
+
+    return result.response.text().trim();
+    
+  } catch (error) {
+    logger.error({ error }, 'Failed to get position close feedback');
+    return getDefaultCloseFeedback(data);
+  }
+}
+
+function getDefaultCloseFeedback(data: PositionCloseData): string {
+  const isWin = data.realizedPnl >= 0;
+  
+  if (isWin && data.exitReason === 'TAKE_PROFIT') {
+    return `🎉 Beautiful! TP hit for +$${data.realizedPnl.toFixed(2)}. You had a plan and executed it. This is professional trading - entry, management, exit. Well done!`;
+  } else if (isWin && data.exitReason === 'MANUAL') {
+    return `💰 Smart exit! You took profit at +$${data.realizedPnl.toFixed(2)}. Sometimes the best trade is the one you manage yourself. Good read on the situation.`;
+  } else if (!isWin && data.exitReason === 'STOP_LOSS') {
+    return `🛡️ SL hit for -$${Math.abs(data.realizedPnl).toFixed(2)}. This is not failure - this is risk management working. You lived to trade another day. The setup was valid, market just didn't agree. Next!`;
+  } else if (!isWin && data.exitReason === 'SWING_BREAK') {
+    return `⚡ Swing break exit at -$${Math.abs(data.realizedPnl).toFixed(2)}. Structure invalidated, we got out. That's discipline. Better a small loss than a big one. Good job respecting the rules.`;
+  } else if (data.exitReason === 'LIQUIDATION') {
+    return `💔 Liquidation... This hurts, I know. Take a break. Review what happened. Was the size too big? SL too far? Learn from this. You'll come back stronger.`;
+  } else {
+    return isWin 
+      ? `✅ Trade closed with +$${data.realizedPnl.toFixed(2)}. Every win counts. Keep stacking those gains!`
+      : `📊 Trade closed at -$${Math.abs(data.realizedPnl).toFixed(2)}. Part of the game. Review, learn, move on.`;
+  }
+}
+
+// ============================================
+// BLOCKED TRADE WISDOM (Legenda's advice)
+// ============================================
+
+const BLOCKED_TRADE_PROMPT = `You are **Legenda** - a legendary trader with 30+ years of experience. 
+A trader just tried to enter a trade that was blocked by the system rules.
+
+Your job is to:
+1. CALM THEM DOWN - they might be frustrated or tempted to force the trade
+2. Explain WHY the rules exist (protect capital, trade with trend)
+3. Share a quick story or wisdom from your experience
+4. Suggest what they SHOULD do instead
+5. Be warm, supportive, like a mentor talking to a promising student
+
+Tone: Friendly, wise, slightly humorous. Like a cool uncle who's seen it all.
+Length: 3-5 sentences max. Be concise but impactful.
+
+DO NOT use JSON. Just respond with your message directly as plain text.
+Start with an emoji that fits the mood.`;
+
+export interface BlockedTradeWisdom {
+  message: string;
+}
+
+export async function getBlockedTradeWisdom(
+  symbol: string,
+  attemptedSide: TradeSide,
+  blockReason: string,
+  marketStatus: {
+    price: number;
+    supertrendDir: string;
+    structureBias: string;
+    bias: string;
+    distanceToSupertrend: number;
+  }
+): Promise<BlockedTradeWisdom> {
+  try {
+    if (!isLLMAvailable()) {
+      return { message: getDefaultWisdom(attemptedSide, blockReason) };
+    }
+
+    const model = getModel();
+    
+    const context = `
+Trader tried: ${attemptedSide} ${symbol}
+Block reason: ${blockReason}
+
+Current market:
+- Price: $${marketStatus.price.toFixed(2)}
+- Supertrend: ${marketStatus.supertrendDir}
+- Structure: ${marketStatus.structureBias}
+- Overall Bias: ${marketStatus.bias}
+- Distance to Supertrend: ${marketStatus.distanceToSupertrend.toFixed(2)}%
+
+The ${attemptedSide} was blocked because the market conditions don't support it.
+Give them wisdom and help them stay patient.`;
+
+    const result = await model.generateContent([
+      { text: BLOCKED_TRADE_PROMPT },
+      { text: context },
+    ]);
+
+    const response = result.response.text().trim();
+    
+    return { message: response };
+    
+  } catch (error) {
+    logger.error({ error, symbol }, 'Failed to get blocked trade wisdom');
+    return { message: getDefaultWisdom(attemptedSide, blockReason) };
+  }
+}
+
+function getDefaultWisdom(side: TradeSide, reason: string): string {
+  const wisdoms = [
+    `😌 Hey, I know it's tempting, but the market's telling you to wait. The best traders aren't the ones who trade the most - they're the ones who wait for THEIR setups. This ${side} will come, just not right now.`,
+    `🧘 Take a breath. I've been trading 30 years and I can tell you - the trades you DON'T take are just as important as the ones you do. The trend is your friend, and right now it's not inviting you to this party.`,
+    `☕ You know what separates pros from amateurs? Patience. Go grab a coffee, review your journal, and let the market come to you. Forcing trades is how accounts blow up.`,
+    `🎯 I've seen traders lose fortunes fighting the trend. The market doesn't care about your opinion - it only rewards those who respect it. Wait for alignment, then strike.`,
+    `💪 It takes MORE discipline to NOT trade than to trade. You just passed a test most traders fail. The setup will come - and when it does, you'll be ready with full capital.`,
+  ];
+  
+  return wisdoms[Math.floor(Math.random() * wisdoms.length)];
+}
+
+// ============================================
 // TRADE JOURNAL ANALYSIS
 // ============================================
 
