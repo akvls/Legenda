@@ -113,6 +113,8 @@ Examples:
 - "cancel order BTC" → action: CANCEL_ORDER, symbol: BTCUSDT
 - "cancel limit order" → action: CANCEL_ORDER
 - "what do you think about btc?" → action: OPINION, symbol: BTCUSDT
+- "what do you think about BUSDT?" → action: OPINION, symbol: BUSDT (keep exact symbol!)
+- "opinion on XYZUSDT" → action: OPINION, symbol: XYZUSDT (keep exact symbol!)
 - "pause trading" → action: PAUSE
 - "how's my position?" → action: INFO
 - "watch btc near sma200" → action: WATCH_CREATE, symbol: BTCUSDT, watchTarget: "sma200", side: "LONG"
@@ -122,7 +124,13 @@ Examples:
 CRITICAL: When user specifies a stop loss price (e.g. "SL 89000", "stop at 2500", "stoploss 89000"), you MUST set slRule to "PRICE" and slPrice to that exact number.
 Do NOT confuse entry price with SL price - look for "sl"/"stop"/"stoploss" keywords.
 
-Symbol aliases: BTC=BTCUSDT, ETH=ETHUSDT, SOL=SOLUSDT, etc.`;
+Symbol handling:
+- Common aliases: BTC=BTCUSDT, ETH=ETHUSDT, SOL=SOLUSDT
+- IMPORTANT: If symbol already ends with USDT, keep it EXACTLY as-is!
+- "BUSDT" stays "BUSDT" (NOT BTCUSDT!)
+- "XYZUSDT" stays "XYZUSDT"
+- Only add USDT if missing: "BTC" → "BTCUSDT", "ETH" → "ETHUSDT"
+- Do NOT guess or change symbols you don't recognize - pass them through exactly!`;
 
 export interface ParsedIntent {
   action: IntentAction | 'INFO' | 'OPINION' | 'UNKNOWN';
