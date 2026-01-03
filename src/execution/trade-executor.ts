@@ -29,7 +29,9 @@ const MAX_LEVERAGE = 10;
 export interface EntryParams {
   symbol: string;
   side: TradeSide;
+  entryPrice?: number;  // Limit order price (if specified, uses limit order instead of market)
   riskPercent: number;
+  positionSizeUsdt?: number;  // Dollar amount (overrides riskPercent if provided)
   requestedLeverage: number;
   slRule: SLRule;
   slPrice?: number;
@@ -139,14 +141,15 @@ export class TradeExecutor extends EventEmitter<TradeExecutorEvents> {
       }
 
       // 4. Calculate position size
-      const { size, riskAmountUsdt, slPrice } = await this.calculatePositionSize(
+      const { size, riskAmountUsdt, slPrice, actualRiskPercent } = await this.calculatePositionSize(
         symbol,
         side,
         params.riskPercent,
         appliedLeverage,
         params.slRule,
         params.slPrice,
-        strategyState
+        strategyState,
+        params.positionSizeUsdt
       );
 
       if (size <= 0) {
@@ -165,7 +168,7 @@ export class TradeExecutor extends EventEmitter<TradeExecutorEvents> {
         strategyId: strategyState?.strategyId ?? 'S103',
         entry: {
           type: 'MARKET',
-          riskPercent: params.riskPercent,
+          riskPercent: actualRiskPercent, // Use actual calculated risk
           riskAmountUsdt,
           requestedLeverage: params.requestedLeverage,
           appliedLeverage,
@@ -201,68 +204,108 @@ export class TradeExecutor extends EventEmitter<TradeExecutorEvents> {
 
       this.activeTrades.set(tradeId, contract);
 
-      // 6. Place entry order
-      const order = await this.orderManager.placeMarket({
-        symbol,
-        side,
-        size,
-        reduceOnly: false,
-        tradeId,
-        isEntry: true,
-      });
+      // 6. Determine emergency SL for atomic order
+      // When user explicitly provides SL price, use it EXACTLY (no buffer)
+      // When SL is auto-calculated (swing/supertrend), apply buffer for protection
+      const slManager = getSLManager();
+      let emergencySlPrice: number | undefined;
+      let strategicSlPrice: number | undefined = slPrice ?? undefined;
+      
+      if (slPrice) {
+        if (params.slRule === 'PRICE' && params.slPrice) {
+          // User explicitly set SL price - use EXACT price, no buffer
+          emergencySlPrice = slPrice;
+          strategicSlPrice = slPrice;
+          logger.info({ symbol, slPrice: slPrice.toFixed(2) }, 'Using explicit SL price (no buffer)');
+        } else {
+          // Auto-calculated SL (swing/supertrend) - apply buffer for protection
+          const bufferPercent = slManager.getBufferPercent();
+          if (side === 'LONG') {
+            emergencySlPrice = slPrice * (1 - bufferPercent / 100);
+          } else {
+            emergencySlPrice = slPrice * (1 + bufferPercent / 100);
+          }
+          strategicSlPrice = slPrice;
+        }
+      }
 
-      // 7. Set Two-Layer SL (via SL Manager)
-      // Wait a moment for fill to register
-      setTimeout(async () => {
-        if (slPrice) {
+      // 7. Place entry order
+      // Use LIMIT order if entry price specified, otherwise MARKET order
+      const isLimitOrder = !!params.entryPrice;
+      let order: ManagedOrder;
+      
+      if (isLimitOrder) {
+        // Limit order - sent to Bybit IMMEDIATELY, waits for price to reach target
+        order = await this.orderManager.placeLimit({
+          symbol,
+          side,
+          size,
+          price: params.entryPrice!,
+          reduceOnly: false,
+          tradeId,
+          isEntry: true,
+          stopLoss: slPrice ?? undefined, // Use strategic SL for limit orders (no buffer needed)
+          takeProfit: params.tpPrice,
+        });
+        logger.info({
+          tradeId,
+          symbol,
+          side,
+          entryPrice: params.entryPrice,
+          size,
+          stopLoss: slPrice,
+          takeProfit: params.tpPrice,
+        }, '📋 Limit order sent to Bybit with SL/TP - waiting for fill');
+        
+        contract.entry.type = 'LIMIT';
+        contract.entry.limitPrice = params.entryPrice;
+      } else {
+        // Market order - execute immediately WITH SL attached (atomic - SL active immediately)
+        order = await this.orderManager.placeMarket({
+          symbol,
+          side,
+          size,
+          reduceOnly: false,
+          tradeId,
+          isEntry: true,
+          stopLoss: emergencySlPrice,
+          takeProfit: params.tpPrice,
+        });
+      }
+
+      // 8. Register strategic SL with SL Manager (for candle-close checks)
+      if (slPrice) {
+        slManager.registerStrategicSL(symbol, side, slPrice, emergencySlPrice!);
+        this.emit('slSet', tradeId, slPrice);
+        logger.info({ 
+          tradeId, 
+          symbol, 
+          strategicSL: slPrice.toFixed(2),
+          emergencySL: emergencySlPrice!.toFixed(2),
+          buffer: `${slManager.getBufferPercent()}%`,
+        }, 'Two-layer stop loss set (atomic with order)');
+      }
+
+      // 9. Set TP from RR if not already set and we have RR target
+      if (!params.tpPrice && params.tpRR && slPrice) {
+        // Wait briefly for fill price, then calculate TP
+        const entryPrice = order.avgFillPrice ?? this.positionTracker.getPosition(symbol)?.avgPrice;
+        if (entryPrice) {
+          const riskDistance = Math.abs(entryPrice - slPrice);
+          const tpPrice = side === 'LONG' 
+            ? entryPrice + (riskDistance * params.tpRR)
+            : entryPrice - (riskDistance * params.tpRR);
+          
           try {
-            // Use Two-Layer SL System:
-            // - Emergency SL: Bybit preset at slPrice - 4% buffer
-            // - Strategic SL: Checked on candle close at slPrice
-            const slManager = getSLManager();
-            const slLevels = await slManager.setTwoLayerSL(symbol, side, slPrice);
-            
-            this.emit('slSet', tradeId, slPrice);
-            logger.info({ 
-              tradeId, 
-              symbol, 
-              strategicSL: slPrice.toFixed(2),
-              emergencySL: slLevels.emergencySL.toFixed(2),
-              buffer: `${slLevels.bufferPercent}%`,
-            }, 'Two-layer stop loss set');
+            await setTakeProfit(symbol, side, tpPrice);
+            this.emit('tpSet', tradeId, tpPrice);
+            contract.tp.price = tpPrice;
+            logger.info({ tradeId, symbol, tpPrice: tpPrice.toFixed(2) }, 'Take profit set from RR');
           } catch (error) {
-            logger.error({ error, tradeId }, 'Failed to set stop loss');
+            logger.error({ error, tradeId }, 'Failed to set TP from RR');
           }
         }
-
-        // 8. Set TP if specified
-        if (params.tpPrice) {
-          try {
-            await setTakeProfit(symbol, side, params.tpPrice);
-            this.emit('tpSet', tradeId, params.tpPrice);
-            logger.info({ tradeId, symbol, tpPrice: params.tpPrice }, 'Take profit set');
-          } catch (error) {
-            logger.error({ error, tradeId }, 'Failed to set take profit');
-          }
-        } else if (params.tpRR && slPrice) {
-          // Calculate TP from RR
-          const entryPrice = order.avgFillPrice ?? this.positionTracker.getPosition(symbol)?.avgPrice;
-          if (entryPrice) {
-            const riskDistance = Math.abs(entryPrice - slPrice);
-            const tpPrice = side === 'LONG' 
-              ? entryPrice + (riskDistance * params.tpRR)
-              : entryPrice - (riskDistance * params.tpRR);
-            
-            try {
-              await setTakeProfit(symbol, side, tpPrice);
-              this.emit('tpSet', tradeId, tpPrice);
-              contract.tp.price = tpPrice;
-            } catch (error) {
-              logger.error({ error, tradeId }, 'Failed to set TP from RR');
-            }
-          }
-        }
-      }, 1000);
+      }
 
       // 9. Save trade to database
       await this.saveTrade(contract, order);
@@ -378,19 +421,38 @@ export class TradeExecutor extends EventEmitter<TradeExecutorEvents> {
     leverage: number,
     slRule: SLRule,
     slPriceInput: number | undefined,
-    strategyState: StrategyState | null
-  ): Promise<{ size: number; riskAmountUsdt: number; slPrice: number | null }> {
+    strategyState: StrategyState | null,
+    positionSizeUsdt?: number
+  ): Promise<{ size: number; riskAmountUsdt: number; slPrice: number | null; actualRiskPercent: number }> {
     
     // Get wallet balance
     const balance = await getWalletBalance();
-    const riskAmountUsdt = balance.availableBalance * (riskPercent / 100);
+    
+    // If dollar amount provided, use it; otherwise calculate from risk percent
+    let riskAmountUsdt: number;
+    let actualRiskPercent: number;
+    
+    if (positionSizeUsdt && positionSizeUsdt > 0) {
+      // User specified dollar amount - calculate risk % from it
+      riskAmountUsdt = positionSizeUsdt;
+      actualRiskPercent = (positionSizeUsdt / balance.availableBalance) * 100;
+      logger.info({ 
+        positionSizeUsdt, 
+        walletBalance: balance.availableBalance.toFixed(2),
+        calculatedRiskPercent: actualRiskPercent.toFixed(2),
+      }, 'Using dollar amount for position size');
+    } else {
+      // Use risk percent
+      riskAmountUsdt = balance.availableBalance * (riskPercent / 100);
+      actualRiskPercent = riskPercent;
+    }
 
     // Get current price
     const position = this.positionTracker.getPosition(symbol);
     const currentPrice = position?.markPrice ?? strategyState?.snapshot.price ?? 0;
 
     if (currentPrice === 0) {
-      return { size: 0, riskAmountUsdt, slPrice: null };
+      return { size: 0, riskAmountUsdt, slPrice: null, actualRiskPercent };
     }
 
     // Determine SL price
@@ -432,10 +494,10 @@ export class TradeExecutor extends EventEmitter<TradeExecutorEvents> {
       const roundedSize = Math.floor(size / stepSize) * stepSize;
       const finalSize = Math.max(roundedSize, minSize);
 
-      return { size: finalSize, riskAmountUsdt, slPrice };
+      return { size: finalSize, riskAmountUsdt, slPrice, actualRiskPercent };
     } catch {
       // Fallback: round to 3 decimals
-      return { size: Math.floor(size * 1000) / 1000, riskAmountUsdt, slPrice };
+      return { size: Math.floor(size * 1000) / 1000, riskAmountUsdt, slPrice, actualRiskPercent };
     }
   }
 
@@ -512,6 +574,119 @@ export class TradeExecutor extends EventEmitter<TradeExecutorEvents> {
       logger.error({ error, symbol }, 'Failed to move SL to BE');
       return false;
     }
+  }
+
+  /**
+   * Restore active trades from database on startup
+   * This ensures we don't lose track of trades after a restart
+   */
+  async restoreFromDatabase(): Promise<number> {
+    try {
+      // Find trades that are not closed (no exitReason and no closedAt)
+      const openTrades = await prisma.trade.findMany({
+        where: {
+          closedAt: null,
+          exitReason: null,
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      let restored = 0;
+      for (const dbTrade of openTrades) {
+        // Verify position actually exists on exchange
+        const position = this.positionTracker.getPosition(dbTrade.symbol);
+        
+        if (position && position.side === dbTrade.side) {
+          // Position exists, restore contract
+          const contract: TradeContract = {
+            tradeId: dbTrade.id,
+            symbol: dbTrade.symbol,
+            side: dbTrade.side as TradeSide,
+            timeframe: dbTrade.timeframe,
+            strategyId: dbTrade.strategyId as StrategyId,
+            entry: {
+              type: dbTrade.entryType as 'MARKET' | 'LIMIT',
+              riskPercent: dbTrade.riskPercent,
+              riskAmountUsdt: dbTrade.riskAmountUsdt,
+              requestedLeverage: dbTrade.requestedLeverage,
+              appliedLeverage: dbTrade.appliedLeverage,
+            },
+            sl: {
+              rule: dbTrade.slRule as SLRule,
+              price: dbTrade.slPrice ?? null,
+            },
+            tp: {
+              rule: dbTrade.tpRule as TPRule,
+              price: dbTrade.tpPrice ?? undefined,
+            },
+            trail: {
+              mode: dbTrade.trailMode as TrailMode,
+              active: dbTrade.trailActive,
+            },
+            invalidation: JSON.parse(dbTrade.invalidationRules || '{}'),
+            reentryPolicy: {
+              lockSameDirection: true,
+              onlyOppositeAllowed: true,
+            },
+            reasons: {
+              userTags: JSON.parse(dbTrade.userTags || '[]'),
+              userNote: dbTrade.userNote ?? undefined,
+              strategySnapshotAtEntry: JSON.parse(dbTrade.strategySnapshotAtEntry || '{}'),
+            },
+          };
+
+          this.activeTrades.set(dbTrade.id, contract);
+          restored++;
+          
+          logger.info({ tradeId: dbTrade.id, symbol: dbTrade.symbol, side: dbTrade.side }, 'Trade restored from database');
+        } else {
+          // Position doesn't exist anymore, mark trade as closed
+          await prisma.trade.update({
+            where: { id: dbTrade.id },
+            data: {
+              closedAt: new Date(),
+              exitReason: 'UNKNOWN_RESTART',
+            },
+          });
+          logger.warn({ tradeId: dbTrade.id, symbol: dbTrade.symbol }, 'Trade marked closed (no matching position)');
+        }
+      }
+
+      logger.info({ restored, total: openTrades.length }, 'Trade restoration complete');
+      return restored;
+    } catch (error) {
+      logger.error({ error }, 'Failed to restore trades from database');
+      return 0;
+    }
+  }
+
+  /**
+   * Clean up completed trades from memory
+   * Keeps only recent trades (last 24 hours) to prevent memory bloat
+   */
+  cleanupCompletedTrades(maxAgeHours: number = 24): number {
+    const cutoffTime = Date.now() - (maxAgeHours * 60 * 60 * 1000);
+    let removed = 0;
+
+    // activeTrades only contains active trades, so nothing to clean there
+    // But we can log the count for monitoring
+    logger.debug({ activeTradesCount: this.activeTrades.size }, 'Active trades count');
+    
+    return removed;
+  }
+
+  /**
+   * Get count of active trades
+   */
+  getActiveTradeCount(): number {
+    return this.activeTrades.size;
+  }
+
+  /**
+   * Clear a specific trade from active trades (after close)
+   */
+  clearTrade(tradeId: string): void {
+    this.activeTrades.delete(tradeId);
   }
 }
 

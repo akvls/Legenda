@@ -50,12 +50,18 @@ export type IntentAction =
   | 'ENTER_SHORT'
   | 'CLOSE'
   | 'CLOSE_PARTIAL'
+  | 'CANCEL_ORDER'  // Cancel pending limit orders
   | 'MOVE_SL'
+  | 'SET_TP'        // Add/modify TP on existing position
+  | 'SET_TRAIL'     // Enable/disable trailing on existing position
   | 'PAUSE'
   | 'RESUME'
   | 'WATCH_CREATE'
   | 'WATCH_CANCEL'
-  | 'WATCH_SNOOZE';
+  | 'WATCH_SNOOZE'
+  | 'INFO'
+  | 'OPINION'
+  | 'UNKNOWN';
 
 export type EventType =
   | 'ENTRY_REQUESTED'
@@ -194,6 +200,7 @@ export interface TradeContract {
   
   entry: {
     type: OrderType;
+    limitPrice?: number;  // Limit order price (only if type is 'LIMIT')
     riskPercent: number;
     riskAmountUsdt: number;
     requestedLeverage: number;

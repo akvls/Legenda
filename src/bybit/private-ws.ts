@@ -92,6 +92,7 @@ export interface PrivateWSEvents {
   authenticated: () => void;
   error: (error: Error) => void;
   reconnecting: () => void;
+  stateResyncNeeded: () => void;
 }
 
 export class PrivateWebSocket extends EventEmitter<PrivateWSEvents> {
@@ -140,6 +141,8 @@ export class PrivateWebSocket extends EventEmitter<PrivateWSEvents> {
       logger.info({ wsKey }, 'Private WebSocket reconnected');
       this.isConnected = true;
       this.emit('connected');
+      // Emit reconnected event for state re-sync
+      this.emit('stateResyncNeeded');
     });
 
     // Response to subscription/auth

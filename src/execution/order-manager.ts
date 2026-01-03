@@ -162,7 +162,7 @@ export class OrderManager extends EventEmitter<OrderManagerEvents> {
   }
 
   /**
-   * Place a market order
+   * Place a market order with optional SL/TP attached atomically
    */
   async placeMarket(params: {
     symbol: string;
@@ -172,6 +172,8 @@ export class OrderManager extends EventEmitter<OrderManagerEvents> {
     tradeId?: string;
     isEntry?: boolean;
     isExit?: boolean;
+    stopLoss?: number;
+    takeProfit?: number;
   }): Promise<ManagedOrder> {
     const orderId = uuid();
     
@@ -206,6 +208,8 @@ export class OrderManager extends EventEmitter<OrderManagerEvents> {
         qty: params.size,
         reduceOnly: params.reduceOnly,
         orderLinkId: orderId,
+        stopLoss: params.stopLoss,
+        takeProfit: params.takeProfit,
       });
 
       order.bybitOrderId = result.orderId;
@@ -236,7 +240,7 @@ export class OrderManager extends EventEmitter<OrderManagerEvents> {
   }
 
   /**
-   * Place a limit order
+   * Place a limit order (sent to Bybit immediately, waits for fill)
    */
   async placeLimit(params: {
     symbol: string;
@@ -249,6 +253,8 @@ export class OrderManager extends EventEmitter<OrderManagerEvents> {
     isExit?: boolean;
     isStopLoss?: boolean;
     isTakeProfit?: boolean;
+    stopLoss?: number;
+    takeProfit?: number;
   }): Promise<ManagedOrder> {
     const orderId = uuid();
     
@@ -284,6 +290,8 @@ export class OrderManager extends EventEmitter<OrderManagerEvents> {
         price: params.price,
         reduceOnly: params.reduceOnly,
         orderLinkId: orderId,
+        stopLoss: params.stopLoss,
+        takeProfit: params.takeProfit,
       });
 
       order.bybitOrderId = result.orderId;

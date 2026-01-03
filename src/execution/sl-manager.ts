@@ -57,7 +57,8 @@ export class SLManager extends EventEmitter<SLManagerEvents> {
   }
 
   /**
-   * Set both SL layers for a trade
+   * Set both SL layers for a trade (legacy - sets SL separately via REST)
+   * @deprecated Use registerStrategicSL instead when SL is set atomically with order
    */
   async setTwoLayerSL(
     symbol: string,
@@ -104,6 +105,36 @@ export class SLManager extends EventEmitter<SLManagerEvents> {
       this.emit('error', error as Error);
       throw error;
     }
+
+    return levels;
+  }
+
+  /**
+   * Register strategic SL for candle-close checks
+   * Used when emergency SL is already set atomically with the order
+   */
+  registerStrategicSL(
+    symbol: string,
+    side: TradeSide,
+    strategicSLPrice: number,
+    emergencySLPrice: number
+  ): SLLevels {
+    const levels: SLLevels = {
+      strategicSL: strategicSLPrice,
+      emergencySL: emergencySLPrice,
+      bufferPercent: this.bufferPercent,
+    };
+
+    // Store levels for candle-close checks
+    this.slLevels.set(symbol, levels);
+    this.emit('emergencySlSet', symbol, emergencySLPrice);
+    
+    logger.info({
+      symbol,
+      side,
+      strategicSL: strategicSLPrice.toFixed(2),
+      emergencySL: emergencySLPrice.toFixed(2),
+    }, 'Strategic SL registered (emergency SL already set with order)');
 
     return levels;
   }

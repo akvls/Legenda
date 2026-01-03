@@ -1,31 +1,58 @@
 import { useState, useEffect } from 'react'
-import { Wallet, AlertTriangle } from 'lucide-react'
+import { Wallet, AlertTriangle, Unlock, RefreshCw, Loader2 } from 'lucide-react'
 import { market, agent, type WalletResponse, type CircuitBreakerStatus } from '../api/client'
 
 export default function WalletCard() {
   const [wallet, setWallet] = useState<WalletResponse['data'] | null>(null)
   const [circuitBreaker, setCircuitBreaker] = useState<CircuitBreakerStatus | null>(null)
   const [loading, setLoading] = useState(true)
+  const [actionLoading, setActionLoading] = useState(false)
+
+  const fetchData = async () => {
+    try {
+      const [walletRes, cbRes] = await Promise.all([
+        market.wallet(),
+        agent.circuitBreaker(),
+      ])
+      setWallet(walletRes.data)
+      setCircuitBreaker(cbRes)
+    } catch (error) {
+      console.error('Failed to fetch wallet:', error)
+    }
+    setLoading(false)
+  }
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const [walletRes, cbRes] = await Promise.all([
-          market.wallet(),
-          agent.circuitBreaker(),
-        ])
-        setWallet(walletRes.data)
-        setCircuitBreaker(cbRes)
-      } catch (error) {
-        console.error('Failed to fetch wallet:', error)
-      }
-      setLoading(false)
-    }
-
     fetchData()
-    const interval = setInterval(fetchData, 10000)
+    // Refresh every 5 seconds
+    const interval = setInterval(fetchData, 5000)
     return () => clearInterval(interval)
   }, [])
+
+  const handleOverride = async () => {
+    if (actionLoading) return
+    if (!confirm('⚠️ Override circuit breaker? Trading will be allowed but be VERY careful!')) return
+    setActionLoading(true)
+    try {
+      await agent.overrideCircuitBreaker()
+      await fetchData()
+    } catch (error) {
+      console.error('Failed to override:', error)
+    }
+    setActionLoading(false)
+  }
+
+  const handleReset = async () => {
+    if (actionLoading) return
+    setActionLoading(true)
+    try {
+      await agent.resetCircuitBreaker()
+      await fetchData()
+    } catch (error) {
+      console.error('Failed to reset:', error)
+    }
+    setActionLoading(false)
+  }
 
   if (loading) {
     return (
@@ -59,6 +86,13 @@ export default function WalletCard() {
         <div className="flex items-center gap-2 text-zinc-400">
           <Wallet size={16} />
           <span className="text-sm">Account Balance</span>
+          <button 
+            onClick={fetchData}
+            className="p-1 rounded hover:bg-dark-600 text-zinc-500 hover:text-zinc-300"
+            title="Refresh balance"
+          >
+            <RefreshCw size={12} />
+          </button>
         </div>
         {isTripped && (
           <span className="text-xs px-2 py-0.5 rounded bg-accent-red/20 text-accent-red flex items-center gap-1">
@@ -100,6 +134,30 @@ export default function WalletCard() {
               style={{ width: `${Math.min(lossPercent / circuitBreaker.threshold * 100, 100)}%` }}
             />
           </div>
+          
+          {/* Circuit Breaker Controls */}
+          {(isTripped || lossPercent > 0) && (
+            <div className="mt-2 flex gap-2">
+              {isTripped && (
+                <button
+                  onClick={handleOverride}
+                  disabled={actionLoading}
+                  className="flex-1 py-1.5 rounded-lg bg-accent-amber/20 hover:bg-accent-amber/30 text-accent-amber text-xs flex items-center justify-center gap-1 disabled:opacity-50"
+                >
+                  {actionLoading ? <Loader2 size={12} className="animate-spin" /> : <Unlock size={12} />}
+                  Override
+                </button>
+              )}
+              <button
+                onClick={handleReset}
+                disabled={actionLoading}
+                className="flex-1 py-1.5 rounded-lg bg-dark-600 hover:bg-dark-500 text-zinc-300 text-xs flex items-center justify-center gap-1 disabled:opacity-50"
+              >
+                {actionLoading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                Reset
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

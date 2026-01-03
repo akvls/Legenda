@@ -111,6 +111,20 @@ router.get('/balance', async (_req, res) => {
 });
 
 /**
+ * Debug: Get ALL wallet balances from all account types
+ */
+router.get('/balance/debug', async (_req, res) => {
+  try {
+    const { getAllWalletBalances } = await import('../../bybit/rest-client.js');
+    const allBalances = await getAllWalletBalances();
+    res.json({ success: true, data: allBalances });
+  } catch (error) {
+    logger.error({ error }, 'Failed to get debug balance');
+    res.status(500).json({ success: false, error: 'Failed to fetch debug balance' });
+  }
+});
+
+/**
  * Get position for a symbol
  */
 router.get('/position/:symbol', async (req, res) => {

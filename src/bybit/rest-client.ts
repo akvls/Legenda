@@ -117,7 +117,7 @@ export async function getWalletBalance(): Promise<{
 }> {
   try {
     const response = await client.getWalletBalance({
-      accountType: 'UNIFIED', // or 'CONTRACT' depending on account type
+      accountType: 'UNIFIED',
     });
 
     if (response.retCode !== 0) {
@@ -125,17 +125,89 @@ export async function getWalletBalance(): Promise<{
     }
 
     const account = response.result.list[0];
-    const usdtCoin = account.coin.find((c) => c.coin === 'USDT');
+    
+    // Sum up ALL coins by their USD value (includes USDT, USDC, BTC, etc.)
+    let totalEquity = 0;
+    let totalAvailable = 0;
+    let totalMargin = 0;
+    
+    if (account?.coin) {
+      for (const coin of account.coin) {
+        // Use usdValue for accurate total, or equity as fallback for stablecoins
+        const coinValue = parseFloat(coin.usdValue || '0');
+        const coinEquity = parseFloat(coin.equity || '0');
+        const coinAvailable = parseFloat(coin.availableToWithdraw || '0');
+        const coinMargin = parseFloat(coin.totalPositionIM || '0');
+        
+        // For stablecoins (USDT, USDC), equity ≈ USD value
+        if (coin.coin === 'USDT' || coin.coin === 'USDC') {
+          totalEquity += coinEquity;
+          totalAvailable += coinAvailable || coinEquity; // If no available, use equity
+        } else {
+          // For other coins, use usdValue
+          totalEquity += coinValue;
+          totalAvailable += coinValue; // Simplified
+        }
+        totalMargin += coinMargin;
+      }
+    }
 
     return {
-      totalEquity: parseFloat(usdtCoin?.equity || '0'),
-      availableBalance: parseFloat(usdtCoin?.availableToWithdraw || '0'),
-      usedMargin: parseFloat(usdtCoin?.totalPositionIM || '0'),
+      totalEquity,
+      availableBalance: totalAvailable,
+      usedMargin: totalMargin,
     };
   } catch (error) {
     logger.error({ error }, 'Failed to fetch wallet balance');
     throw error;
   }
+}
+
+/**
+ * Debug: Get ALL wallet balances from all account types
+ */
+export async function getAllWalletBalances(): Promise<any> {
+  const results: any = {};
+  
+  // Check all account types
+  const accountTypes = ['UNIFIED', 'CONTRACT', 'SPOT', 'FUND'] as const;
+  
+  for (const accountType of accountTypes) {
+    try {
+      const response = await client.getWalletBalance({
+        accountType: accountType as any,
+      });
+      
+      if (response.retCode === 0 && response.result.list) {
+        results[accountType] = {
+          success: true,
+          accounts: response.result.list.map((acc: any) => ({
+            accountType: acc.accountType,
+            coins: acc.coin?.map((c: any) => ({
+              coin: c.coin,
+              equity: c.equity,
+              walletBalance: c.walletBalance,
+              availableToWithdraw: c.availableToWithdraw,
+              usdValue: c.usdValue,
+            })).filter((c: any) => parseFloat(c.equity || '0') > 0 || parseFloat(c.walletBalance || '0') > 0)
+          }))
+        };
+      } else {
+        results[accountType] = { 
+          success: false, 
+          error: response.retMsg,
+          code: response.retCode
+        };
+      }
+    } catch (error: any) {
+      results[accountType] = { 
+        success: false, 
+        error: error.message 
+      };
+    }
+  }
+  
+  return results;
 }
 
 /**
@@ -260,7 +332,8 @@ export async function setLeverage(
 // ============================================
 
 /**
- * Place a market order
+ * Place a market order with optional SL/TP attached
+ * SL/TP are set atomically with the order for safety
  */
 export async function placeMarketOrder(params: {
   symbol: string;
@@ -268,11 +341,14 @@ export async function placeMarketOrder(params: {
   qty: number;
   reduceOnly?: boolean;
   orderLinkId?: string;
+  stopLoss?: number;
+  takeProfit?: number;
 }): Promise<{ orderId: string; orderLinkId: string }> {
   const bybitSide = params.side === 'LONG' ? 'Buy' : 'Sell';
   
   try {
-    const response = await client.submitOrder({
+    // Build order params with optional SL/TP
+    const orderParams: Record<string, unknown> = {
       category: 'linear',
       symbol: params.symbol,
       side: bybitSide,
@@ -280,7 +356,19 @@ export async function placeMarketOrder(params: {
       qty: params.qty.toString(),
       reduceOnly: params.reduceOnly || false,
       orderLinkId: params.orderLinkId,
-    });
+    };
+
+    // Attach SL/TP to order (atomic, set immediately with position)
+    if (params.stopLoss) {
+      orderParams.stopLoss = params.stopLoss.toString();
+      orderParams.slTriggerBy = 'LastPrice';
+    }
+    if (params.takeProfit) {
+      orderParams.takeProfit = params.takeProfit.toString();
+      orderParams.tpTriggerBy = 'LastPrice';
+    }
+
+    const response = await client.submitOrder(orderParams as any);
 
     if (response.retCode !== 0) {
       throw new Error(`Bybit API error: ${response.retMsg}`);
@@ -291,9 +379,11 @@ export async function placeMarketOrder(params: {
         symbol: params.symbol, 
         side: params.side, 
         qty: params.qty,
-        orderId: response.result.orderId 
+        orderId: response.result.orderId,
+        stopLoss: params.stopLoss,
+        takeProfit: params.takeProfit,
       }, 
-      'Market order placed'
+      'Market order placed with SL/TP'
     );
 
     return {
@@ -307,7 +397,8 @@ export async function placeMarketOrder(params: {
 }
 
 /**
- * Place a limit order
+ * Place a limit order with optional SL/TP
+ * Order is sent to Bybit IMMEDIATELY - Bybit holds it until price is reached
  */
 export async function placeLimitOrder(params: {
   symbol: string;
@@ -316,11 +407,14 @@ export async function placeLimitOrder(params: {
   price: number;
   reduceOnly?: boolean;
   orderLinkId?: string;
+  stopLoss?: number;
+  takeProfit?: number;
 }): Promise<{ orderId: string; orderLinkId: string }> {
   const bybitSide = params.side === 'LONG' ? 'Buy' : 'Sell';
   
   try {
-    const response = await client.submitOrder({
+    // Build order params with optional SL/TP
+    const orderParams: Record<string, unknown> = {
       category: 'linear',
       symbol: params.symbol,
       side: bybitSide,
@@ -329,8 +423,20 @@ export async function placeLimitOrder(params: {
       price: params.price.toString(),
       reduceOnly: params.reduceOnly || false,
       orderLinkId: params.orderLinkId,
-      timeInForce: 'GTC',
-    });
+      timeInForce: 'GTC', // Good Till Cancelled - stays on Bybit until filled
+    };
+
+    // Attach SL/TP to order (will activate when order fills)
+    if (params.stopLoss) {
+      orderParams.stopLoss = params.stopLoss.toString();
+      orderParams.slTriggerBy = 'LastPrice';
+    }
+    if (params.takeProfit) {
+      orderParams.takeProfit = params.takeProfit.toString();
+      orderParams.tpTriggerBy = 'LastPrice';
+    }
+
+    const response = await client.submitOrder(orderParams as any);
 
     if (response.retCode !== 0) {
       throw new Error(`Bybit API error: ${response.retMsg}`);
@@ -342,9 +448,11 @@ export async function placeLimitOrder(params: {
         side: params.side, 
         qty: params.qty,
         price: params.price,
+        stopLoss: params.stopLoss,
+        takeProfit: params.takeProfit,
         orderId: response.result.orderId 
       }, 
-      'Limit order placed'
+      'Limit order placed on Bybit (waiting for fill)'
     );
 
     return {

@@ -3,10 +3,11 @@ import {
   BookOpen, 
   Settings, 
   Activity,
-  Zap
+  Zap,
+  ScrollText,
 } from 'lucide-react'
 
-type Page = 'dashboard' | 'journal' | 'settings'
+type Page = 'dashboard' | 'journal' | 'events' | 'settings'
 
 interface SidebarProps {
   currentPage: Page
@@ -18,6 +19,7 @@ export default function Sidebar({ currentPage, onPageChange, connected }: Sideba
   const navItems = [
     { id: 'dashboard' as Page, icon: LayoutDashboard, label: 'Dashboard' },
     { id: 'journal' as Page, icon: BookOpen, label: 'Journal' },
+    { id: 'events' as Page, icon: ScrollText, label: 'Event Log' },
     { id: 'settings' as Page, icon: Settings, label: 'Settings' },
   ]
 

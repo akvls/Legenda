@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react'
 import Sidebar from './components/Sidebar'
 import Dashboard from './pages/Dashboard'
 import Journal from './pages/Journal'
+import EventLog from './pages/EventLog'
 import Settings from './pages/Settings'
 
-type Page = 'dashboard' | 'journal' | 'settings'
+type Page = 'dashboard' | 'journal' | 'events' | 'settings'
 
 function App() {
   const [currentPage, setCurrentPage] = useState<Page>('dashboard')
@@ -28,9 +29,10 @@ function App() {
       />
       
       {/* Main Content */}
-      <main className="flex-1 overflow-hidden">
+      <main className="flex-1 overflow-hidden overflow-y-auto">
         {currentPage === 'dashboard' && <Dashboard />}
         {currentPage === 'journal' && <Journal />}
+        {currentPage === 'events' && <EventLog />}
         {currentPage === 'settings' && <Settings />}
       </main>
     </div>

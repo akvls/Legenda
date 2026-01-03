@@ -10,6 +10,7 @@ import settingsRoutes from './routes/settings.js';
 import strategyRoutes from './routes/strategy.js';
 import executionRoutes from './routes/execution.js';
 import agentRoutes from './routes/agent.js';
+import journalRoutes from './routes/journal.js';
 
 /**
  * Create Express Application
@@ -21,19 +22,25 @@ export function createApp() {
   app.use(cors());
   app.use(express.json());
   
-  // Request logging (only for API routes)
-  app.use('/api', (req: Request, _res: Response, next: NextFunction) => {
+  // Request logging and cache control (only for API routes)
+  app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+    // Prevent browser caching of API responses
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    
     logger.debug({ method: req.method, path: req.path }, 'Request');
     next();
   });
 
-  // API Routes
-  app.use('/api', healthRoutes);
-  app.use('/api/market', marketRoutes);
-  app.use('/api/settings', settingsRoutes);
-  app.use('/api/strategy', strategyRoutes);
-  app.use('/api/execution', executionRoutes);
-  app.use('/api/agent', agentRoutes);
+    // API Routes
+    app.use('/api', healthRoutes);
+    app.use('/api/market', marketRoutes);
+    app.use('/api/settings', settingsRoutes);
+    app.use('/api/strategy', strategyRoutes);
+    app.use('/api/execution', executionRoutes);
+    app.use('/api/agent', agentRoutes);
+    app.use('/api/journal', journalRoutes);
 
   // Serve frontend static files (production build)
   const frontendPath = path.join(process.cwd(), 'frontend/dist');

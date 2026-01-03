@@ -20,7 +20,7 @@ export interface TrackedPosition {
   leverage: number;
   unrealizedPnl: number;
   markPrice: number;
-  liqPrice: number;
+  liqPrice: number | null;
   stopLoss: number | null;
   takeProfit: number | null;
   updatedAt: number;
@@ -29,7 +29,7 @@ export interface TrackedPosition {
 export interface PositionTrackerEvents {
   positionOpened: (position: TrackedPosition) => void;
   positionUpdated: (position: TrackedPosition) => void;
-  positionClosed: (symbol: string, side: TradeSide) => void;
+  positionClosed: (symbol: string, side: TradeSide, realizedPnl: number) => void;
   pnlUpdate: (symbol: string, pnl: number, pnlPercent: number) => void;
   error: (error: Error) => void;
 }
@@ -57,29 +57,45 @@ export class PositionTracker extends EventEmitter<PositionTrackerEvents> {
       // Position closed
       const existing = this.positions.get(symbol);
       if (existing) {
+        // Get realized P&L from the update (cumRealisedPnl from Bybit)
+        const realizedPnl = parseFloat(update.cumRealisedPnl || '0');
         this.positions.delete(symbol);
-        this.emit('positionClosed', symbol, existing.side);
-        logger.info({ symbol, side: existing.side }, 'Position closed');
+        this.emit('positionClosed', symbol, existing.side, realizedPnl);
+        logger.info({ symbol, side: existing.side, realizedPnl }, 'Position closed');
       }
       return;
     }
 
     const side: TradeSide = update.side === 'Buy' ? 'LONG' : 'SHORT';
+    const existing = this.positions.get(symbol);
+    
+    // Parse values, keeping existing if new value is invalid or zero
+    const parsedAvgPrice = parseFloat(update.avgPrice);
+    const parsedLeverage = parseFloat(update.leverage);
+    const parsedUnrealizedPnl = parseFloat(update.unrealisedPnl);
+    const parsedMarkPrice = parseFloat(update.markPrice);
+    const parsedLiqPrice = parseFloat(update.liqPrice);
+    
+    // For markPrice: only use new value if it's valid AND non-zero
+    // (Bybit sometimes sends 0 in updates which is incorrect)
+    const validMarkPrice = !isNaN(parsedMarkPrice) && parsedMarkPrice > 0 
+      ? parsedMarkPrice 
+      : (existing?.markPrice ?? 0);
+    
     const position: TrackedPosition = {
       symbol,
       side,
       size,
-      avgPrice: parseFloat(update.avgPrice),
-      leverage: parseFloat(update.leverage),
-      unrealizedPnl: parseFloat(update.unrealisedPnl),
-      markPrice: parseFloat(update.markPrice),
-      liqPrice: parseFloat(update.liqPrice),
-      stopLoss: update.stopLoss ? parseFloat(update.stopLoss) : null,
-      takeProfit: update.takeProfit ? parseFloat(update.takeProfit) : null,
+      // Keep existing avgPrice if new one is NaN (WebSocket might not always send it)
+      avgPrice: !isNaN(parsedAvgPrice) && parsedAvgPrice > 0 ? parsedAvgPrice : (existing?.avgPrice ?? 0),
+      leverage: !isNaN(parsedLeverage) && parsedLeverage > 0 ? parsedLeverage : (existing?.leverage ?? 1),
+      unrealizedPnl: !isNaN(parsedUnrealizedPnl) ? parsedUnrealizedPnl : (existing?.unrealizedPnl ?? 0),
+      markPrice: validMarkPrice,
+      liqPrice: !isNaN(parsedLiqPrice) && parsedLiqPrice > 0 ? parsedLiqPrice : (existing?.liqPrice ?? null),
+      stopLoss: update.stopLoss ? parseFloat(update.stopLoss) : (existing?.stopLoss ?? null),
+      takeProfit: update.takeProfit ? parseFloat(update.takeProfit) : (existing?.takeProfit ?? null),
       updatedAt: Date.now(),
     };
-
-    const existing = this.positions.get(symbol);
     
     if (!existing) {
       // New position
@@ -91,8 +107,9 @@ export class PositionTracker extends EventEmitter<PositionTrackerEvents> {
       this.positions.set(symbol, position);
       this.emit('positionUpdated', position);
       
-      // Calculate PnL percent
-      const pnlPercent = (position.unrealizedPnl / (position.avgPrice * position.size)) * 100;
+      // Calculate PnL percent (avoid division by zero)
+      const positionValue = position.avgPrice * position.size;
+      const pnlPercent = positionValue > 0 ? (position.unrealizedPnl / positionValue) * 100 : 0;
       this.emit('pnlUpdate', symbol, position.unrealizedPnl, pnlPercent);
     }
   }

@@ -1,15 +1,29 @@
-import { useState, useEffect } from 'react'
-import { TrendingUp, TrendingDown, Minus, RefreshCw } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { TrendingUp, TrendingDown, Minus, RefreshCw, Wifi, WifiOff } from 'lucide-react'
 import { strategy, type StrategyState } from '../api/client'
+import { useStrategyState, useTicker } from '../hooks/useWebSocket'
 
 interface StrategyPanelProps {
   symbol?: string
 }
 
 export default function StrategyPanel({ symbol = 'BTCUSDT' }: StrategyPanelProps) {
+  const { state: wsState, isConnected } = useStrategyState(symbol)
+  const { ticker } = useTicker(symbol)
   const [state, setState] = useState<StrategyState | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  
+  // Cache the last known good price to prevent flickering
+  const lastKnownPrice = useRef<number | null>(null)
+  
+  // Update cached price when ticker provides new data
+  if (ticker?.price && ticker.price > 0) {
+    lastKnownPrice.current = ticker.price
+  }
+  
+  // Use real-time price from ticker, fallback to cached price, then to strategy snapshot
+  const currentPrice = ticker?.price ?? lastKnownPrice.current ?? state?.snapshot.price
 
   const fetchState = async () => {
     try {
@@ -32,11 +46,28 @@ export default function StrategyPanel({ symbol = 'BTCUSDT' }: StrategyPanelProps
     setRefreshing(false)
   }
 
+  // Initial fetch and register symbol
   useEffect(() => {
+    setLoading(true)
+    lastKnownPrice.current = null // Reset cached price when symbol changes
     fetchState()
-    const interval = setInterval(fetchState, 10000)
-    return () => clearInterval(interval)
   }, [symbol])
+
+  // Use WebSocket state when available
+  useEffect(() => {
+    if (wsState) {
+      setState(wsState)
+      setLoading(false)
+    }
+  }, [wsState])
+
+  // Fallback to polling when WebSocket disconnected
+  useEffect(() => {
+    if (!isConnected) {
+      const interval = setInterval(fetchState, 5000)
+      return () => clearInterval(interval)
+    }
+  }, [isConnected, symbol])
 
   const refresh = () => {
     setRefreshing(true)
@@ -79,6 +110,13 @@ export default function StrategyPanel({ symbol = 'BTCUSDT' }: StrategyPanelProps
         <div className="flex items-center gap-2">
           <span className="text-zinc-300 font-medium">{symbol}</span>
           <span className="text-xs text-zinc-500">{state.timeframe}m</span>
+          <span title={isConnected ? 'Real-time updates' : 'Polling mode'}>
+            {isConnected ? (
+              <Wifi size={12} className="text-accent-green" />
+            ) : (
+              <WifiOff size={12} className="text-zinc-500" />
+            )}
+          </span>
         </div>
         <button 
           onClick={refresh}
@@ -103,8 +141,9 @@ export default function StrategyPanel({ symbol = 'BTCUSDT' }: StrategyPanelProps
           </div>
           
           <div className="text-right">
-            <div className="text-xl font-semibold text-zinc-200 mono">
-              ${state.snapshot.price.toFixed(2)}
+            <div className="text-xl font-semibold text-zinc-200 mono flex items-center gap-1 justify-end">
+              ${currentPrice?.toFixed(2) ?? '---'}
+              {ticker && <span className="w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse" title="Live" />}
             </div>
             <div className="text-xs text-zinc-500">
               {state.snapshot.currentTrend}

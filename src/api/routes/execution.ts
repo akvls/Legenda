@@ -3,6 +3,8 @@ import { getTradeExecutor } from '../../execution/trade-executor.js';
 import { getPositionTracker } from '../../execution/position-tracker.js';
 import { getOrderManager } from '../../execution/order-manager.js';
 import { getTrailingManager } from '../../execution/trailing-manager.js';
+import { getSLManager } from '../../execution/sl-manager.js';
+import { getStrategyEngine } from '../../strategy/engine.js';
 import { apiLogger as logger } from '../../utils/logger.js';
 import { prisma } from '../../db/index.js';
 import type { TradeSide, SLRule, TPRule, TrailMode } from '../../types/index.js';
@@ -161,14 +163,45 @@ router.post('/move-sl-be', async (req, res) => {
 });
 
 /**
- * Get current positions
+ * Get current positions with trailing SL info
  */
 router.get('/positions', async (_req, res) => {
   try {
     const tracker = getPositionTracker();
+    const executor = getTradeExecutor();
+    const slManager = getSLManager();
+    const strategyEngine = getStrategyEngine();
     const positions = tracker.getAllPositions();
 
-    res.json({ success: true, data: positions });
+    // Enrich positions with trailing info
+    const enrichedPositions = positions.map(pos => {
+      const trade = executor.getActiveTrade(pos.symbol);
+      const slLevels = slManager.getSLLevels(pos.symbol);
+      const strategyState = strategyEngine.getState(pos.symbol);
+      
+      let nextTrailLevel: number | null = null;
+      if (trade && trade.trail.active && strategyState) {
+        if (trade.trail.mode === 'SUPERTREND') {
+          nextTrailLevel = strategyState.snapshot.supertrendValue;
+        } else if (trade.trail.mode === 'STRUCTURE') {
+          nextTrailLevel = pos.side === 'LONG' 
+            ? strategyState.keyLevels.protectedSwingLow 
+            : strategyState.keyLevels.protectedSwingHigh;
+        }
+      }
+
+      return {
+        ...pos,
+        // Trailing info
+        trailMode: trade?.trail.mode || 'NONE',
+        trailActive: trade?.trail.active || false,
+        strategicSL: slLevels?.strategicSL || null,
+        emergencySL: slLevels?.emergencySL || null,
+        nextTrailLevel,
+      };
+    });
+
+    res.json({ success: true, data: enrichedPositions });
   } catch (error) {
     logger.error({ error }, 'Failed to get positions');
     res.status(500).json({ success: false, error: 'Failed to get positions' });
@@ -279,7 +312,42 @@ router.get('/trades', async (req, res) => {
 });
 
 /**
- * Get open orders
+ * Get ALL open/pending orders (for pending orders UI)
+ */
+router.get('/orders', async (req, res) => {
+  try {
+    const orderManager = getOrderManager();
+    
+    // Get all orders from order manager
+    const allOrders: any[] = [];
+    
+    // We need to get orders from the internal map
+    // Since there's no getAll method, let's add it via the positions we have
+    // For now, fetch from Bybit directly
+    const { getOpenOrders } = await import('../../bybit/rest-client.js');
+    const bybitOrders = await getOpenOrders();
+    
+    // Map to our format
+    const orders = bybitOrders.map(o => ({
+      id: o.orderId,
+      symbol: o.symbol,
+      side: o.side === 'Buy' ? 'LONG' : 'SHORT',
+      price: parseFloat(o.price),
+      size: parseFloat(o.qty),
+      status: o.orderStatus === 'New' ? 'OPEN' : o.orderStatus,
+      orderType: o.orderType,
+      createdAt: new Date(parseInt(o.createdTime)).toISOString(),
+    }));
+
+    res.json({ success: true, data: orders });
+  } catch (error) {
+    logger.error({ error }, 'Failed to get all orders');
+    res.status(500).json({ success: false, error: 'Failed to get orders' });
+  }
+});
+
+/**
+ * Get open orders for specific symbol
  */
 router.get('/orders/:symbol', async (req, res) => {
   try {

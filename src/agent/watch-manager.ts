@@ -2,6 +2,7 @@ import { EventEmitter } from 'eventemitter3';
 import { getStrategyEngine } from '../strategy/engine.js';
 import { createLogger } from '../utils/logger.js';
 import { v4 as uuidv4 } from 'uuid';
+import eventLogger from '../services/event-logger.js';
 import type { TradeSide, StrategyState, WatchTriggerType, WatchMode } from '../types/index.js';
 
 const logger = createLogger('watch-manager');
@@ -109,6 +110,13 @@ export class WatchManager extends EventEmitter<WatchEvents> {
 
     this.watches.set(watch.id, watch);
     this.emit('watchCreated', watch);
+    
+    // Log event
+    eventLogger.logWatchEvent('CREATED', watch.symbol, watch.id, {
+      side: watch.intendedSide,
+      triggerType: watch.triggerType,
+      threshold: watch.thresholdPercent,
+    });
 
     logger.info({
       watchId: watch.id,
@@ -150,6 +158,13 @@ export class WatchManager extends EventEmitter<WatchEvents> {
         watch.triggeredPrice = state.snapshot.price;
 
         this.emit('watchTriggered', watch, state.snapshot.price, targetPrice, distance);
+        
+        // Log event
+        eventLogger.logWatchEvent('TRIGGERED', watch.symbol, watch.id, {
+          price: state.snapshot.price,
+          side: watch.intendedSide,
+          triggerType: watch.triggerType,
+        });
 
         logger.info({
           watchId: id,
@@ -236,6 +251,10 @@ export class WatchManager extends EventEmitter<WatchEvents> {
 
     watch.status = 'CANCELLED';
     this.emit('watchCancelled', watch);
+    
+    // Log event
+    eventLogger.logWatchEvent('CANCELLED', watch.symbol, watchId, {});
+    
     logger.info({ watchId }, 'Watch cancelled');
 
     return true;

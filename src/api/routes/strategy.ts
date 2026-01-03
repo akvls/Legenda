@@ -66,20 +66,31 @@ router.post('/register', async (req, res) => {
 });
 
 /**
- * Get current strategy state for a symbol
+ * Get current strategy state for a symbol (recomputes with fresh data)
+ * Auto-registers the symbol if not already registered
  */
 router.get('/state/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
     const engine = getStrategyEngine();
-    const state = engine.getState(symbol);
+    
+    // Check if symbol is registered, auto-register if not
+    let state = engine.getState(symbol);
+    if (!state) {
+      logger.info({ symbol }, 'Auto-registering symbol on state request');
+      await engine.registerSymbol(symbol);
+      state = engine.getState(symbol);
+    }
     
     if (!state) {
-      return res.status(404).json({ 
+      return res.status(500).json({ 
         success: false, 
-        error: `No strategy state for ${symbol}. Register it first.` 
+        error: `Failed to get state for ${symbol}. Try again.` 
       });
     }
+    
+    // Recompute with fresh price data
+    state = await engine.recomputeState(symbol);
     
     res.json({ success: true, data: state });
   } catch (error) {
@@ -163,17 +174,25 @@ router.get('/check-entry/:symbol/:side', async (req, res) => {
 
 /**
  * Get strategy summary for display
+ * Auto-registers the symbol if not already registered
  */
 router.get('/summary/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
     const engine = getStrategyEngine();
-    const state = engine.getState(symbol);
+    let state = engine.getState(symbol);
+    
+    // Auto-register if not registered
+    if (!state) {
+      logger.info({ symbol }, 'Auto-registering symbol on summary request');
+      await engine.registerSymbol(symbol);
+      state = engine.getState(symbol);
+    }
     
     if (!state) {
-      return res.status(404).json({ 
+      return res.status(500).json({ 
         success: false, 
-        error: `No strategy state for ${symbol}` 
+        error: `Failed to get state for ${symbol}` 
       });
     }
     

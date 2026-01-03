@@ -83,6 +83,12 @@ export function parseIntent(rawText: string): Intent | null {
     case 'MOVE_SL':
       parseMoveSlIntent(words, intent);
       break;
+    case 'SET_TP':
+      parseSetTpIntent(words, intent);
+      break;
+    case 'SET_TRAIL':
+      parseSetTrailIntent(words, intent);
+      break;
     case 'WATCH_CREATE':
       parseWatchIntent(words, intent);
       break;
@@ -135,6 +141,11 @@ function detectAction(words: string[]): IntentAction | null {
     return 'ENTER_SHORT';
   }
 
+  // Cancel order actions (for pending limit orders)
+  if (words.includes('cancel') && (words.includes('order') || words.includes('limit'))) {
+    return 'CANCEL_ORDER';
+  }
+
   // Close actions
   if (words.includes('close') || words.includes('exit')) {
     if (words.includes('half') || words.includes('partial') || words.includes('50')) {
@@ -146,6 +157,25 @@ function detectAction(words: string[]): IntentAction | null {
   // SL actions
   if (text.includes('move sl') || text.includes('sl to be') || text.includes('breakeven')) {
     return 'MOVE_SL';
+  }
+
+  // TP actions (set/add/modify take profit)
+  if (text.includes('set tp') || text.includes('add tp') || text.includes('tp to') || 
+      (text.includes('take profit') && (text.includes('set') || text.includes('at')))) {
+    return 'SET_TP';
+  }
+
+  // Trail actions (enable/set/disable trailing on existing position)
+  if ((text.includes('trail') || text.includes('trailing')) && 
+      (text.includes('enable') || text.includes('set') || text.includes('activate') ||
+       text.includes('supertrend') || text.includes('structure') || 
+       text.includes('disable') || text.includes('off') || text.includes('none'))) {
+    return 'SET_TRAIL';
+  }
+
+  // Trail status check
+  if (text.includes('trail') && (text.includes('status') || text.includes('info') || text.includes('check') || text.includes('sl'))) {
+    return 'INFO';
   }
 
   // Pause/Resume
@@ -178,10 +208,16 @@ function parseEntryIntent(words: string[], intent: Intent): void {
   }
 
   // Extract SL rule
-  intent.slRule = extractSlRule(words);
-
   // Extract SL price if specified
-  intent.slPrice = extractNumber(words, ['sl', 'stop']);
+  intent.slPrice = extractNumber(words, ['sl', 'stop', 'stoploss']);
+
+  // Determine SL rule - if price given, use PRICE rule
+  if (intent.slPrice && intent.slPrice > 100) {
+    // Looks like a price (e.g., 89000 for BTC)
+    intent.slRule = 'PRICE';
+  } else {
+    intent.slRule = extractSlRule(words);
+  }
 
   // Extract TP rule
   intent.tpRule = extractTpRule(words);
@@ -228,6 +264,16 @@ function parseMoveSlIntent(words: string[], intent: Intent): void {
     // Extract new SL price
     intent.newSlPrice = extractNumber(words, ['sl', 'to', 'at']);
   }
+}
+
+/**
+ * Parse set TP intent
+ */
+function parseSetTpIntent(words: string[], intent: Intent): void {
+  intent.symbol = extractSymbol(words);
+  
+  // Extract TP price
+  intent.tpPrice = extractNumber(words, ['tp', 'take', 'profit', 'to', 'at']);
 }
 
 /**
@@ -284,6 +330,24 @@ function parseWatchIntent(words: string[], intent: Intent): void {
   intent.riskPercent = extractNumber(words, ['risk', 'r']) ?? DEFAULTS.riskPercent;
   intent.slRule = extractSlRule(words);
   intent.trailMode = extractTrailMode(words);
+}
+
+/**
+ * Parse set trail intent (enable/disable trailing on existing position)
+ */
+function parseSetTrailIntent(words: string[], intent: Intent): void {
+  intent.symbol = extractSymbol(words);
+  
+  const text = words.join(' ');
+  
+  // Determine trail mode
+  if (text.includes('disable') || text.includes('off') || text.includes('none') || text.includes('stop trail')) {
+    intent.trailMode = 'NONE';
+  } else if (text.includes('structure') || text.includes('swing')) {
+    intent.trailMode = 'STRUCTURE';
+  } else {
+    intent.trailMode = 'SUPERTREND'; // Default
+  }
 }
 
 /**

@@ -1,27 +1,103 @@
-import { useState, useEffect } from 'react'
-import { TrendingUp, TrendingDown, Shield, Target, X } from 'lucide-react'
-import { execution, type Position } from '../api/client'
+import { useState, useEffect, useRef } from 'react'
+import { TrendingUp, TrendingDown, Shield, Target, X, Loader2, Crosshair } from 'lucide-react'
+import { execution, api, type Position } from '../api/client'
+import { usePositions, useTrailUpdates, useAllTickers } from '../hooks/useWebSocket'
 
 export default function PositionCard() {
-  const [positions, setPositions] = useState<Position[]>([])
-  const [loading, setLoading] = useState(true)
+  const { positions: wsPositions, isConnected } = usePositions()
+  const { trailData } = useTrailUpdates()
+  const { tickers } = useAllTickers()
+  const [initialPositions, setInitialPositions] = useState<Position[]>([])
+  const [initialLoaded, setInitialLoaded] = useState(false)
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
+  
+  // Cache ticker data in a ref to prevent flickering during state updates
+  const tickerCacheRef = useRef<Map<string, { markPrice: number; price: number }>>(new Map())
+
+  // Fetch initial positions only once on mount
+  const fetchPositions = async () => {
+    try {
+      const res = await execution.positions()
+      const posData = res.data || []
+      setInitialPositions(posData.filter((p: Position) => p.size > 0))
+    } catch (error) {
+      console.error('Failed to fetch positions:', error)
+    }
+    setInitialLoaded(true)
+  }
 
   useEffect(() => {
-    const fetchPositions = async () => {
-      try {
-        const res = await execution.positions()
-        const posData = res.data || []
-        setPositions(posData.filter((p: Position) => parseFloat(p.size) > 0))
-      } catch (error) {
-        console.error('Failed to fetch positions:', error)
-      }
-      setLoading(false)
-    }
-
     fetchPositions()
-    const interval = setInterval(fetchPositions, 5000)
-    return () => clearInterval(interval)
   }, [])
+
+  // Fallback polling only when WebSocket is disconnected
+  useEffect(() => {
+    if (!isConnected) {
+      const interval = setInterval(fetchPositions, 3000)
+      return () => clearInterval(interval)
+    }
+  }, [isConnected])
+
+  // Update ticker cache whenever tickers map changes
+  useEffect(() => {
+    tickers.forEach((ticker, symbol) => {
+      if (ticker.markPrice > 0) {
+        tickerCacheRef.current.set(symbol, {
+          markPrice: ticker.markPrice,
+          price: ticker.price
+        })
+      }
+    })
+  }, [tickers])
+
+  // Use WebSocket positions when available, fallback to initial fetch data
+  const rawPositions = (wsPositions.length > 0 ? wsPositions : initialPositions)
+    .filter((p: Position) => p.size > 0)
+  
+  // Enrich positions with cached ticker data to prevent flickering
+  const positions = rawPositions.map(p => {
+    const cached = tickerCacheRef.current.get(p.symbol)
+    if (cached && cached.markPrice > 0 && (!p.markPrice || p.markPrice === 0)) {
+      const markPrice = cached.markPrice
+      const unrealizedPnl = p.avgPrice 
+        ? (markPrice - p.avgPrice) * p.size * (p.side === 'LONG' ? 1 : -1)
+        : p.unrealizedPnl
+      return { ...p, markPrice, unrealizedPnl }
+    }
+    return p
+  })
+  
+  const loading = !initialLoaded && wsPositions.length === 0
+
+  const handleClose = async (symbol: string) => {
+    if (actionLoading) return
+    setActionLoading(`close-${symbol}`)
+    try {
+      await api.chat(`close ${symbol}`)
+      // WebSocket will update positions automatically, fallback fetch for safety
+      if (!isConnected) {
+        setTimeout(fetchPositions, 1000)
+      }
+    } catch (error) {
+      console.error('Failed to close position:', error)
+    }
+    setActionLoading(null)
+  }
+
+  const handleMoveSL = async (symbol: string) => {
+    if (actionLoading) return
+    setActionLoading(`sl-${symbol}`)
+    try {
+      await api.chat(`move sl ${symbol} to be`)
+      // WebSocket will update positions automatically, fallback fetch for safety
+      if (!isConnected) {
+        setTimeout(fetchPositions, 1000)
+      }
+    } catch (error) {
+      console.error('Failed to move SL:', error)
+    }
+    setActionLoading(null)
+  }
 
   if (loading) {
     return (
@@ -49,12 +125,32 @@ export default function PositionCard() {
   return (
     <div className="space-y-3">
       {positions.map(position => {
-        const pnl = parseFloat(position.unrealisedPnl)
+        const side = position.side
+        const entryPrice = position.avgPrice ?? 0
+        
+        // Get markPrice: position data (enriched) -> tickers map -> cached ref
+        const tickerData = tickers.get(position.symbol)
+        const cachedTicker = tickerCacheRef.current.get(position.symbol)
+        const rawMarkPrice = position.markPrice ?? 0
+        const markPrice = rawMarkPrice > 0 
+          ? rawMarkPrice 
+          : (tickerData?.markPrice ?? cachedTicker?.markPrice ?? 0)
+        
+        // Calculate PnL from markPrice for real-time accuracy
+        const pnl = markPrice > 0 && entryPrice > 0
+          ? (markPrice - entryPrice) * (position.size ?? 0) * (side === 'LONG' ? 1 : -1)
+          : (position.unrealizedPnl ?? 0)
         const isProfit = pnl >= 0
-        const side = position.side === 'Buy' ? 'LONG' : 'SHORT'
-        const entryPrice = parseFloat(position.entryPrice)
-        const markPrice = parseFloat(position.markPrice)
-        const pnlPercent = ((markPrice - entryPrice) / entryPrice) * 100 * (side === 'LONG' ? 1 : -1)
+        
+        // Calculate position value
+        const positionValue = (position.size ?? 0) * markPrice
+        
+        // Calculate PnL percent
+        const pnlPercent = markPrice > 0 && entryPrice > 0 
+          ? ((markPrice - entryPrice) / entryPrice) * 100 * (side === 'LONG' ? 1 : -1)
+          : (entryPrice > 0 && position.size > 0 
+              ? (pnl / (entryPrice * position.size)) * 100
+              : 0)
 
         return (
           <div 
@@ -93,10 +189,10 @@ export default function PositionCard() {
             {/* P&L */}
             <div className="mb-4">
               <div className={`text-2xl font-semibold mono ${isProfit ? 'text-accent-green' : 'text-accent-red'}`}>
-                {isProfit ? '+' : ''}{pnl.toFixed(2)} USDT
+                {isProfit ? '+' : ''}{pnl?.toFixed(2) ?? '0.00'} USDT
               </div>
               <div className={`text-sm ${isProfit ? 'text-accent-green/70' : 'text-accent-red/70'}`}>
-                {isProfit ? '+' : ''}{pnlPercent.toFixed(2)}%
+                {isProfit ? '+' : ''}{pnlPercent?.toFixed(2) ?? '0.00'}%
               </div>
             </div>
 
@@ -104,32 +200,126 @@ export default function PositionCard() {
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div>
                 <span className="text-zinc-500 text-xs">Entry</span>
-                <div className="text-zinc-300 mono">${entryPrice.toFixed(2)}</div>
+                <div className="text-zinc-300 mono">${entryPrice?.toFixed(2) ?? 'N/A'}</div>
               </div>
               <div>
                 <span className="text-zinc-500 text-xs">Mark</span>
-                <div className="text-zinc-300 mono">${markPrice.toFixed(2)}</div>
+                <div className="text-zinc-300 mono">
+                  {markPrice > 0 ? `$${markPrice.toFixed(2)}` : <span className="text-zinc-500">Loading...</span>}
+                </div>
               </div>
               <div>
                 <span className="text-zinc-500 text-xs">Size</span>
-                <div className="text-zinc-300 mono">{position.size}</div>
+                <div className="text-zinc-300 mono">{position.size?.toFixed(4) ?? '0'}</div>
               </div>
               <div>
                 <span className="text-zinc-500 text-xs">Value</span>
                 <div className="text-zinc-300 mono">
-                  ${(parseFloat(position.size) * markPrice).toFixed(2)}
+                  {markPrice > 0 ? `$${positionValue.toFixed(2)}` : <span className="text-zinc-500">Loading...</span>}
                 </div>
               </div>
             </div>
 
+            {/* SL/TP Info */}
+            {(position.stopLoss || position.takeProfit) && (
+              <div className="grid grid-cols-2 gap-3 text-sm mt-2 pt-2 border-t border-dark-600">
+                <div>
+                  <span className="text-zinc-500 text-xs">Stop Loss</span>
+                  <div className="text-accent-red mono">{position.stopLoss ? `$${Number(position.stopLoss).toFixed(2)}` : '-'}</div>
+                </div>
+                <div>
+                  <span className="text-zinc-500 text-xs">Take Profit</span>
+                  <div className="text-accent-green mono">{position.takeProfit ? `$${Number(position.takeProfit).toFixed(2)}` : '-'}</div>
+                </div>
+              </div>
+            )}
+
+            {/* Trailing SL Info */}
+            {(() => {
+              // Get trailing info from WebSocket updates or from position data
+              const trail = trailData.get(position.symbol)
+              const trailMode = trail?.trailMode || position.trailMode || 'NONE'
+              const trailActive = trail?.trailActive ?? position.trailActive ?? false
+              const strategicSL = trail?.strategicSL || position.strategicSL
+              const emergencySL = trail?.emergencySL || position.emergencySL
+              const nextTrailLevel = trail?.nextTrailLevel || position.nextTrailLevel
+
+              if (trailMode === 'NONE' && !strategicSL) return null
+
+              return (
+                <div className="mt-3 pt-3 border-t border-dark-600">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Crosshair size={14} className="text-accent-blue" />
+                    <span className="text-xs text-zinc-400">Trailing Stop</span>
+                    <span className={`
+                      text-xs px-1.5 py-0.5 rounded
+                      ${trailActive ? 'bg-accent-green/20 text-accent-green' : 'bg-dark-600 text-zinc-500'}
+                    `}>
+                      {trailMode} {trailActive ? '✓' : '○'}
+                    </span>
+                  </div>
+                  
+                  <div className="grid grid-cols-3 gap-2 text-xs">
+                    <div>
+                      <span className="text-zinc-500">Strategic SL</span>
+                      <div className="text-accent-yellow mono font-medium">
+                        {strategicSL ? `$${Number(strategicSL).toFixed(2)}` : '-'}
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-zinc-500">Emergency SL</span>
+                      <div className="text-accent-red mono">
+                        {emergencySL ? `$${Number(emergencySL).toFixed(2)}` : '-'}
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-zinc-500">Next Trail</span>
+                      <div className="text-accent-blue mono">
+                        {nextTrailLevel ? `$${Number(nextTrailLevel).toFixed(2)}` : '-'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {trailActive && nextTrailLevel && strategicSL && (
+                    <div className="mt-2 text-xs text-zinc-500">
+                      {side === 'LONG' 
+                        ? Number(nextTrailLevel) > Number(strategicSL) 
+                          ? `↑ SL will trail up to $${Number(nextTrailLevel).toFixed(2)} on candle close`
+                          : `SL at best level, waiting for higher trail`
+                        : Number(nextTrailLevel) < Number(strategicSL)
+                          ? `↓ SL will trail down to $${Number(nextTrailLevel).toFixed(2)} on candle close`
+                          : `SL at best level, waiting for lower trail`
+                      }
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+
             {/* Actions */}
             <div className="flex gap-2 mt-4">
-              <button className="flex-1 py-2 rounded-lg bg-dark-600 hover:bg-dark-500 text-zinc-300 text-sm flex items-center justify-center gap-1">
-                <Shield size={14} />
-                Move SL
+              <button 
+                onClick={() => handleMoveSL(position.symbol)}
+                disabled={!!actionLoading}
+                className="flex-1 py-2 rounded-lg bg-dark-600 hover:bg-dark-500 text-zinc-300 text-sm flex items-center justify-center gap-1 disabled:opacity-50"
+              >
+                {actionLoading === `sl-${position.symbol}` ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Shield size={14} />
+                )}
+                Move to BE
               </button>
-              <button className="flex-1 py-2 rounded-lg bg-accent-red/20 hover:bg-accent-red/30 text-accent-red text-sm flex items-center justify-center gap-1">
-                <X size={14} />
+              <button 
+                onClick={() => handleClose(position.symbol)}
+                disabled={!!actionLoading}
+                className="flex-1 py-2 rounded-lg bg-accent-red/20 hover:bg-accent-red/30 text-accent-red text-sm flex items-center justify-center gap-1 disabled:opacity-50"
+              >
+                {actionLoading === `close-${position.symbol}` ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <X size={14} />
+                )}
                 Close
               </button>
             </div>
@@ -139,4 +329,5 @@ export default function PositionCard() {
     </div>
   )
 }
+
 

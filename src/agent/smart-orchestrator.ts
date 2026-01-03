@@ -6,7 +6,10 @@ import { getTradeExecutor, type TradeExecutor } from '../execution/trade-executo
 import { getTrailingManager, type TrailingManager } from '../execution/trailing-manager.js';
 import { getStrategyEngine, type StrategyEngine } from '../strategy/engine.js';
 import { getPositionTracker } from '../execution/position-tracker.js';
+import { getOrderManager } from '../execution/order-manager.js';
+import { getSLManager } from '../execution/sl-manager.js';
 import { prisma } from '../db/index.js';
+import eventLogger from '../services/event-logger.js';
 import {
   parseIntentWithLLM,
   getTradeOpinion,
@@ -128,39 +131,68 @@ export class SmartOrchestrator {
     }
 
     // Handle different actions
+    let response: SmartResponse;
+    
     switch (parsedIntent.action) {
       case 'ENTER_LONG':
       case 'ENTER_SHORT':
-        return this.handleEntry(parsedIntent, rawText);
+        response = await this.handleEntry(parsedIntent, rawText);
+        break;
 
       case 'CLOSE':
       case 'CLOSE_PARTIAL':
-        return this.handleClose(parsedIntent);
+        response = await this.handleClose(parsedIntent);
+        break;
+
+      case 'CANCEL_ORDER':
+        response = await this.handleCancelOrder(parsedIntent);
+        break;
 
       case 'MOVE_SL':
-        return this.handleMoveSl(parsedIntent);
+        response = await this.handleMoveSl(parsedIntent);
+        break;
+
+      case 'SET_TP':
+        response = await this.handleSetTp(parsedIntent);
+        break;
+
+      case 'SET_TRAIL':
+        response = await this.handleSetTrail(parsedIntent);
+        break;
 
       case 'PAUSE':
-        return this.handlePause();
+        response = this.handlePause();
+        break;
 
       case 'RESUME':
-        return this.handleResume();
+        response = this.handleResume();
+        break;
 
       case 'OPINION':
-        return this.handleOpinion(parsedIntent.symbol);
+        response = await this.handleOpinion(parsedIntent.symbol);
+        break;
 
       case 'INFO':
-        return this.handleInfo(parsedIntent.symbol);
+        response = this.handleInfo(parsedIntent.symbol);
+        break;
 
       case 'WATCH_CREATE':
-        return this.handleWatchCreate(parsedIntent);
+        response = await this.handleWatchCreate(parsedIntent);
+        break;
 
       case 'WATCH_CANCEL':
-        return this.handleWatchCancel(parsedIntent);
+        response = await this.handleWatchCancel(parsedIntent);
+        break;
 
       default:
-        return this.handleConversation(rawText);
+        response = await this.handleConversation(rawText);
+        break;
     }
+
+    // Save response to memory (conversation handler saves itself via LLM)
+    memoryManager.addMessage('assistant', response.message);
+
+    return response;
   }
 
   /**
@@ -169,6 +201,21 @@ export class SmartOrchestrator {
   private async handleWatchCreate(parsed: any): Promise<SmartResponse> {
     const symbol = parsed.symbol || 'BTCUSDT';
     const side: TradeSide = parsed.side || 'LONG';
+    
+    // Auto-register symbol if not available (needed for watch to work)
+    if (!this.strategyEngine.getState(symbol)) {
+      try {
+        logger.info({ symbol }, 'Auto-registering symbol for watch');
+        await this.strategyEngine.registerSymbol(symbol);
+      } catch (error) {
+        logger.error({ error, symbol }, 'Failed to auto-register for watch');
+        return {
+          success: false,
+          message: `❌ Failed to get data for ${symbol}. Try again.`,
+          type: 'error',
+        };
+      }
+    }
     
     // Determine trigger type from parsed intent
     let triggerType: WatchTriggerType = 'CLOSER_TO_SMA200';
@@ -295,9 +342,17 @@ I'll alert you when price gets within ${threshold}% of ${targetLabel}. ${mode ==
   private async handleEntry(parsed: any, rawCommand?: string): Promise<SmartResponse> {
     const symbol = parsed.symbol || 'BTCUSDT';
     const side: TradeSide = parsed.action === 'ENTER_LONG' ? 'LONG' : 'SHORT';
+    const isLimitOrder = !!parsed.entryPrice;
+
+    // Log entry request
+    await eventLogger.logEntryRequested(symbol, side, {
+      riskPercent: parsed.riskPercent || 0.5,
+      leverage: parsed.leverage || 5,
+    });
 
     // Check if paused
     if (stateMachine.isPaused()) {
+      await eventLogger.logEntryBlocked(symbol, side, 'PAUSED', 'Trading is paused');
       return {
         success: false,
         message: '⏸️ Trading is paused. Say "resume" to continue.',
@@ -305,9 +360,10 @@ I'll alert you when price gets within ${threshold}% of ${targetLabel}. ${mode ==
       };
     }
 
-    // Check circuit breaker (70% daily loss = 24hr lockout)
+    // Check circuit breaker (50% daily loss = 24hr lockout)
     const circuitCheck = circuitBreaker.canTrade();
     if (!circuitCheck.allowed) {
+      await eventLogger.logEntryBlocked(symbol, side, 'CIRCUIT_BREAKER', circuitCheck.reason);
       return {
         success: false,
         message: `${circuitCheck.reason}\n⏰ Unlocks in: ${circuitCheck.unlockIn}\n\n💡 This protects you from revenge trading. Take a break.`,
@@ -318,21 +374,55 @@ I'll alert you when price gets within ${threshold}% of ${targetLabel}. ${mode ==
     // Check state machine
     const canEnter = stateMachine.canEnter(symbol, side);
     if (!canEnter.allowed) {
+      await eventLogger.logEntryBlocked(symbol, side, 'LOCKED', canEnter.reason);
+      
+      // Build detailed message for state-based blocks
+      let stateMsg = `🚫 **${side} ${symbol} Not Allowed**\n\n`;
+      stateMsg += `**Reason:** ${canEnter.reason}\n\n`;
+      
+      const symbolState = stateMachine.getState(symbol);
+      if (symbolState.state === 'IN_LONG' || symbolState.state === 'IN_SHORT') {
+        stateMsg += `📍 You already have an open ${symbolState.side} position.\n`;
+        stateMsg += `💡 Close it first: \`close ${symbol}\` or \`close all\``;
+      } else if (symbolState.state === 'LOCK_LONG' || symbolState.state === 'LOCK_SHORT') {
+        const lockedSide = symbolState.state === 'LOCK_LONG' ? 'LONG' : 'SHORT';
+        const allowedSide = lockedSide === 'LONG' ? 'SHORT' : 'LONG';
+        stateMsg += `🔒 ${lockedSide} is temporarily locked after a stop loss to prevent revenge trading.\n\n`;
+        stateMsg += `💡 **Options:**\n`;
+        stateMsg += `• Wait for the market to give a ${allowedSide} signal\n`;
+        stateMsg += `• ${allowedSide} entries are still allowed\n`;
+        stateMsg += `• The lock clears when you take an opposite trade or conditions reset`;
+      } else if (symbolState.state === 'EXITING') {
+        stateMsg += `⏳ Position is currently being closed. Wait a moment and try again.`;
+      }
+      
       return {
         success: false,
-        message: `🚫 ${canEnter.reason}`,
+        message: stateMsg,
         type: 'error',
       };
     }
 
-    // Get strategy state
-    const strategyState = this.strategyEngine.getState(symbol);
+    // Get strategy state - auto-register if not available
+    let strategyState = this.strategyEngine.getState(symbol);
     if (!strategyState) {
-      return {
-        success: false,
-        message: `📊 No market data for ${symbol}. Register it first with /api/strategy/register/${symbol}`,
-        type: 'error',
-      };
+      // Auto-register the symbol
+      try {
+        logger.info({ symbol }, 'Auto-registering symbol for trade');
+        await this.strategyEngine.registerSymbol(symbol);
+        strategyState = this.strategyEngine.getState(symbol);
+      } catch (error) {
+        logger.error({ error, symbol }, 'Failed to auto-register symbol');
+      }
+      
+      // If still no state after registration, fail
+      if (!strategyState) {
+        return {
+          success: false,
+          message: `📊 Failed to get market data for ${symbol}. Please try again in a few seconds.`,
+          type: 'error',
+        };
+      }
     }
 
     // Get LLM opinion if available
@@ -375,7 +465,10 @@ I'll alert you when price gets within ${threshold}% of ${targetLabel}. ${mode ==
       riskPercent,
       requestedLeverage: leverage,
       slRule: (parsed.slRule as any) || 'SWING',
+      slPrice: parsed.slPrice,  // Pass SL price from parsed intent
       tpRule: (parsed.tpRule as any) || 'NONE',
+      tpPrice: parsed.tpPrice,  // Pass TP price from parsed intent
+      tpRR: parsed.tpRR,
       trailMode: (parsed.trailMode as any) || 'SUPERTREND',
     };
 
@@ -398,10 +491,15 @@ I'll alert you when price gets within ${threshold}% of ${targetLabel}. ${mode ==
       const result = await this.tradeExecutor.executeEntry({
         symbol,
         side,
+        entryPrice: parsed.entryPrice, // Limit order price (if specified)
         riskPercent: contract.riskPercent,
+        positionSizeUsdt: parsed.positionSizeUsdt, // Dollar amount if provided
         requestedLeverage: contract.leverage,
         slRule: contract.slRule,
+        slPrice: contract.slPrice,  // Pass the SL price
         tpRule: contract.tpRule,
+        tpPrice: contract.tpPrice,  // Pass the TP price
+        tpRR: contract.tpRR,
         trailMode: contract.trailMode,
       });
 
@@ -417,20 +515,54 @@ I'll alert you when price gets within ${threshold}% of ${targetLabel}. ${mode ==
           this.trailingManager.activateTrailing(symbol);
         }
 
+        // Log entry placed
+        await eventLogger.logEntryPlaced(symbol, contract.id, side, {
+          price: contract.entryPrice,
+          size: contract.positionSize,
+          leverage: contract.leverage,
+          slPrice: contract.actualSlPrice,
+        });
+
+        // Log AI opinion if available
+        if (opinion) {
+          await eventLogger.logAiOpinion(symbol, opinion.recommendation, opinion.confidence, contract.id);
+        }
+
         // Record trade with full snapshot
         await this.recordTrade(symbol, side, contract.entryPrice!, contract.positionSize!, contract, rawCommand);
 
-        let responseMsg = `✅ **${side} ${symbol}**\n`;
-        responseMsg += `📍 Entry: $${contract.entryPrice?.toFixed(2)}\n`;
+        // Calculate actual risk from the result
+        const actualRiskPercent = result.contract?.entry?.riskPercent ?? contract.riskPercent;
+        const riskDisplay = parsed.positionSizeUsdt 
+          ? `$${parsed.positionSizeUsdt} (${actualRiskPercent.toFixed(1)}% of wallet)`
+          : `${actualRiskPercent.toFixed(1)}%`;
+
+        // Determine order type label
+        const orderTypeLabel = isLimitOrder ? '📋 LIMIT ORDER' : '✅ MARKET ORDER';
+        const entryDisplay = isLimitOrder 
+          ? `Target: $${parsed.entryPrice} (waiting for fill)`
+          : `$${contract.entryPrice?.toFixed(2)}`;
+
+        let responseMsg = `${orderTypeLabel} **${side} ${symbol}**\n`;
+        responseMsg += `📍 Entry: ${entryDisplay}\n`;
         responseMsg += `📦 Size: ${contract.positionSize}\n`;
         responseMsg += `🛡️ SL: ${contract.actualSlPrice ? '$' + contract.actualSlPrice.toFixed(2) : 'Set'}\n`;
-        responseMsg += `⚙️ Leverage: ${contract.leverage}x | Risk: ${contract.riskPercent}%`;
+        responseMsg += `⚙️ Leverage: ${contract.leverage}x | Risk: ${riskDisplay}`;
         
-        // Add AI opinion as advice (not blocking)
+        // Add AI opinion with full details
         if (opinion) {
-          responseMsg += `\n\n🤖 **AI Advice**: ${opinion.keyPoints[0] || opinion.opinion}`;
-          if (opinion.recommendation === 'WAIT' || opinion.recommendation === 'SKIP') {
-            responseMsg += `\n⚠️ AI suggested ${opinion.recommendation} (Confidence: ${opinion.confidence}/10)`;
+          responseMsg += `\n\n---\n🤖 **AI Analysis**`;
+          responseMsg += `\n📝 ${opinion.opinion}`;
+          responseMsg += `\n\n📊 **Recommendation**: ${opinion.recommendation} (Confidence: ${opinion.confidence}/10)`;
+          responseMsg += `\n⚠️ **Risk Level**: ${opinion.riskLevel}`;
+          if (opinion.keyPoints && opinion.keyPoints.length > 0) {
+            responseMsg += `\n\n**Key Points:**`;
+            opinion.keyPoints.forEach(point => {
+              responseMsg += `\n• ${point}`;
+            });
+          }
+          if (opinion.watchSuggestion) {
+            responseMsg += `\n\n💡 **Suggestion**: \`${opinion.watchSuggestion}\``;
           }
         }
         if (warningMsg) {
@@ -447,9 +579,70 @@ I'll alert you when price gets within ${threshold}% of ${targetLabel}. ${mode ==
       } else {
         contract.status = 'REJECTED';
         contract.rejectReason = result.error || result.blockReason;
+        
+        // Build detailed explanation for blocked trades
+        let detailedMsg = `🚫 **${side} ${symbol} Blocked**\n\n`;
+        
+        // Add current market status
+        if (strategyState) {
+          const snap = strategyState.snapshot;
+          const bias = strategyState.bias;
+          
+          detailedMsg += `📊 **Current Market Status:**\n`;
+          detailedMsg += `• Price: $${snap.price.toFixed(2)}\n`;
+          detailedMsg += `• Supertrend: **${snap.supertrendDir}** @ $${snap.supertrendValue.toFixed(2)}\n`;
+          detailedMsg += `• Structure: **${snap.structureBias}**\n`;
+          detailedMsg += `• Strategy Bias: **${bias}**\n\n`;
+          
+          // Explain why blocked
+          detailedMsg += `❌ **Why Blocked:**\n`;
+          detailedMsg += `${result.error || result.blockReason}\n\n`;
+          
+          // Give context about the hard gate
+          if (side === 'LONG' && snap.supertrendDir !== 'LONG') {
+            detailedMsg += `📝 The Supertrend indicator is bearish (pointing down). `;
+            detailedMsg += `Going LONG against the Supertrend violates the hard gate rules.\n\n`;
+          } else if (side === 'SHORT' && snap.supertrendDir !== 'SHORT') {
+            detailedMsg += `📝 The Supertrend indicator is bullish (pointing up). `;
+            detailedMsg += `Going SHORT against the Supertrend violates the hard gate rules.\n\n`;
+          }
+          
+          if (side === 'LONG' && snap.structureBias === 'BEARISH') {
+            detailedMsg += `📝 Market structure is making lower lows and lower highs (bearish). `;
+            detailedMsg += `LONG entries require at least neutral structure.\n\n`;
+          } else if (side === 'SHORT' && snap.structureBias === 'BULLISH') {
+            detailedMsg += `📝 Market structure is making higher highs and higher lows (bullish). `;
+            detailedMsg += `SHORT entries require at least neutral structure.\n\n`;
+          }
+          
+          // Suggestion
+          detailedMsg += `💡 **Suggestions:**\n`;
+          if (strategyState.allowLongEntry) {
+            detailedMsg += `• LONG entries are currently allowed\n`;
+          }
+          if (strategyState.allowShortEntry) {
+            detailedMsg += `• SHORT entries are currently allowed\n`;
+          }
+          if (!strategyState.allowLongEntry && !strategyState.allowShortEntry) {
+            detailedMsg += `• Wait for clearer market conditions\n`;
+            detailedMsg += `• Set a watch: \`watch ${symbol} near supertrend\`\n`;
+          }
+          
+          // Distance info
+          detailedMsg += `\n📏 **Key Levels:**\n`;
+          detailedMsg += `• Distance to Supertrend: ${snap.distanceToSupertrend.toFixed(2)}%\n`;
+          detailedMsg += `• Distance to SMA200: ${snap.distanceToSma200.toFixed(2)}%\n`;
+          
+          // Override note
+          detailedMsg += `\n⚠️ *These rules exist to protect you from trading against the trend. `;
+          detailedMsg += `Override is not available - the hard gate is there to keep you safe.*`;
+        } else {
+          detailedMsg += `${result.error || result.blockReason}`;
+        }
+        
         return {
           success: false,
-          message: `❌ Trade failed: ${result.error || result.blockReason}`,
+          message: detailedMsg,
           type: 'error',
           contract,
         };
@@ -486,6 +679,83 @@ I'll alert you when price gets within ${threshold}% of ${targetLabel}. ${mode ==
     return this.closePosition(symbol, parsed.closePercent || 100);
   }
 
+  /**
+   * Handle cancel order (pending limit orders)
+   */
+  private async handleCancelOrder(parsed: any): Promise<SmartResponse> {
+    const symbol = parsed.symbol?.toUpperCase();
+    
+    try {
+      const orderManager = getOrderManager();
+      
+      if (symbol) {
+        // Cancel all pending orders for specific symbol
+        const openOrders = orderManager.getOpenOrdersForSymbol(symbol);
+        if (openOrders.length === 0) {
+          return {
+            success: false,
+            message: `📭 No pending orders for ${symbol}`,
+            type: 'info',
+          };
+        }
+        
+        await orderManager.cancelAll(symbol);
+        
+        // Clean up active trades for cancelled orders
+        for (const order of openOrders) {
+          if (order.tradeId) {
+            this.tradeExecutor.clearTrade(order.tradeId);
+          }
+        }
+        
+        return {
+          success: true,
+          message: `✅ Cancelled ${openOrders.length} pending order(s) for ${symbol}`,
+          type: 'trade',
+        };
+      } else {
+        // No symbol specified - list pending orders from order manager
+        const orderManager = getOrderManager();
+        const allPendingOrders: any[] = [];
+        
+        // Get pending orders from contracts
+        for (const [tradeId, contract] of this.contracts) {
+          if (contract.status === 'PENDING') {
+            allPendingOrders.push({
+              symbol: contract.symbol,
+              side: contract.side,
+              price: contract.slPrice || 'Market',
+            });
+          }
+        }
+        
+        if (allPendingOrders.length === 0) {
+          return {
+            success: true,
+            message: '📭 No pending limit orders to cancel',
+            type: 'info',
+          };
+        }
+        
+        const orderList = allPendingOrders.map(o => 
+          `• ${o.side} ${o.symbol} @ $${o.price}`
+        ).join('\n');
+        
+        return {
+          success: true,
+          message: `📋 **Pending Limit Orders:**\n${orderList}\n\n💡 Say \`cancel order BTC\` to cancel specific symbol`,
+          type: 'info',
+        };
+      }
+    } catch (error) {
+      return {
+        success: false,
+        message: `❌ Failed to cancel order: ${(error as Error).message}`,
+        type: 'error',
+      };
+    }
+  }
+
   private async closePosition(symbol: string, percent: number): Promise<SmartResponse> {
     const state = stateMachine.getState(symbol);
     if (state.state !== 'IN_LONG' && state.state !== 'IN_SHORT') {
@@ -503,6 +773,13 @@ I'll alert you when price gets within ${threshold}% of ${targetLabel}. ${mode ==
 
       if (success) {
         this.trailingManager.deactivateTrailing(symbol);
+        
+        // Log exit event
+        const contractId = this.activeContractsBySymbol.get(symbol);
+        await eventLogger.logExit(symbol, contractId || '', reason, {
+          side: state.side!,
+          reason,
+        });
         
         if (percent === 100) {
           stateMachine.exitClean(symbol);
@@ -564,6 +841,200 @@ I'll alert you when price gets within ${threshold}% of ${targetLabel}. ${mode ==
   }
 
   /**
+   * Handle set TP (add/modify take profit on existing position)
+   */
+  private async handleSetTp(parsed: any): Promise<SmartResponse> {
+    const symbol = parsed.symbol;
+    const tpPrice = parsed.tpPrice;
+
+    if (!symbol) {
+      // Try to find any open position
+      const positions = getPositionTracker().getAllPositions();
+      if (positions.length === 0) {
+        return {
+          success: false,
+          message: '📭 No open positions to set TP on.',
+          type: 'error',
+        };
+      }
+      if (positions.length === 1) {
+        return this.setTpForPosition(positions[0].symbol, tpPrice);
+      }
+      return {
+        success: false,
+        message: `❓ Multiple positions open. Specify symbol: "set tp BTC 95000"`,
+        type: 'error',
+      };
+    }
+
+    if (!tpPrice) {
+      return {
+        success: false,
+        message: '❓ What price? Try "set tp BTC 95000"',
+        type: 'error',
+      };
+    }
+
+    return this.setTpForPosition(symbol, tpPrice);
+  }
+
+  private async setTpForPosition(symbol: string, tpPrice: number): Promise<SmartResponse> {
+    const position = getPositionTracker().getPosition(symbol);
+    if (!position) {
+      return {
+        success: false,
+        message: `📭 No position in ${symbol} to set TP on.`,
+        type: 'error',
+      };
+    }
+
+    try {
+      const { setTakeProfit } = await import('../bybit/rest-client.js');
+      await setTakeProfit(symbol, position.side, tpPrice);
+
+      return {
+        success: true,
+        message: `✅ Take Profit set for ${symbol} at $${tpPrice.toFixed(2)}\n\n📍 Entry: $${position.avgPrice.toFixed(2)}\n🎯 TP: $${tpPrice.toFixed(2)}\n📈 Potential: ${((tpPrice - position.avgPrice) / position.avgPrice * 100 * (position.side === 'LONG' ? 1 : -1)).toFixed(2)}%`,
+        type: 'trade',
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: `❌ Failed to set TP: ${(error as Error).message}`,
+        type: 'error',
+      };
+    }
+  }
+
+  /**
+   * Handle set trail (enable/disable trailing on existing position)
+   */
+  private async handleSetTrail(parsed: any): Promise<SmartResponse> {
+    const positionTracker = getPositionTracker();
+    const slManager = getSLManager();
+    let symbol = parsed.symbol;
+    const trailMode = parsed.trailMode || 'SUPERTREND';
+
+    // If no symbol, try to find any open position
+    if (!symbol) {
+      const positions = positionTracker.getAllPositions();
+      if (positions.length === 0) {
+        return {
+          success: false,
+          message: '📭 No open positions to set trailing on.',
+          type: 'error',
+        };
+      }
+      if (positions.length === 1) {
+        symbol = positions[0].symbol;
+      } else {
+        return {
+          success: false,
+          message: `❓ Multiple positions open. Specify symbol: "enable trail BTC supertrend"`,
+          type: 'error',
+        };
+      }
+    }
+
+    const position = positionTracker.getPosition(symbol);
+    if (!position) {
+      return {
+        success: false,
+        message: `📭 No position in ${symbol} to set trailing on.`,
+        type: 'error',
+      };
+    }
+
+    // Get or create active trade
+    let trade = this.tradeExecutor.getActiveTrade(symbol);
+    
+    if (!trade) {
+      // No active trade in memory - create minimal one for trailing
+      return {
+        success: false,
+        message: `❌ No active trade record for ${symbol}. Position may have been opened externally or before app restart.`,
+        type: 'error',
+      };
+    }
+
+    // Disable trailing
+    if (trailMode === 'NONE') {
+      this.trailingManager.deactivateTrailing(symbol);
+      trade.trail.active = false;
+      trade.trail.mode = 'NONE';
+      
+      return {
+        success: true,
+        message: `🔴 Trailing **DISABLED** for ${symbol}\n\nSL will remain static at current level.`,
+        type: 'info',
+      };
+    }
+
+    // Enable trailing - auto-register if needed
+    let strategyState = this.strategyEngine.getState(symbol);
+    if (!strategyState) {
+      try {
+        await this.strategyEngine.registerSymbol(symbol);
+        strategyState = this.strategyEngine.getState(symbol);
+      } catch (error) {
+        logger.error({ error, symbol }, 'Failed to auto-register for trailing');
+      }
+      if (!strategyState) {
+        return {
+          success: false,
+          message: `❌ Failed to get strategy state for ${symbol}. Try again.`,
+          type: 'error',
+        };
+      }
+    }
+
+    // Set up strategic SL based on trail mode
+    let newSlPrice: number;
+    if (trailMode === 'SUPERTREND') {
+      newSlPrice = strategyState.snapshot.supertrendValue;
+    } else { // STRUCTURE
+      newSlPrice = position.side === 'LONG'
+        ? strategyState.keyLevels.protectedSwingLow || strategyState.snapshot.supertrendValue
+        : strategyState.keyLevels.protectedSwingHigh || strategyState.snapshot.supertrendValue;
+    }
+
+    // Register the SL with SL manager
+    const buffer = slManager.getBufferPercent();
+    let emergencySlPrice: number;
+    if (position.side === 'LONG') {
+      emergencySlPrice = newSlPrice * (1 - buffer / 100);
+    } else {
+      emergencySlPrice = newSlPrice * (1 + buffer / 100);
+    }
+
+    // Update SL on Bybit
+    try {
+      const { setStopLoss } = await import('../bybit/rest-client.js');
+      await setStopLoss(symbol, position.side, emergencySlPrice);
+      
+      // Register with SL manager
+      slManager.registerStrategicSL(symbol, position.side, newSlPrice, emergencySlPrice);
+      
+      // Activate trailing
+      trade.trail.active = true;
+      trade.trail.mode = trailMode;
+      this.trailingManager.activateTrailing(symbol);
+
+      return {
+        success: true,
+        message: `✅ Trailing **ENABLED** for ${symbol}\n\n📈 Trail Mode: ${trailMode}\n🛡️ Strategic SL: $${newSlPrice.toFixed(2)}\n🚨 Emergency SL: $${emergencySlPrice.toFixed(2)}\n\nSL will trail on each candle close.`,
+        type: 'trade',
+      };
+    } catch (error) {
+      return {
+        success: false,
+        message: `❌ Failed to set trailing SL: ${(error as Error).message}`,
+        type: 'error',
+      };
+    }
+  }
+
+  /**
    * Handle pause
    */
   private handlePause(): SmartResponse {
@@ -593,13 +1064,24 @@ I'll alert you when price gets within ${threshold}% of ${targetLabel}. ${mode ==
   async handleOpinion(symbol?: string): Promise<SmartResponse> {
     const sym = symbol || 'BTCUSDT';
     
-    const strategyState = this.strategyEngine.getState(sym);
+    // Auto-register symbol if not available
+    let strategyState = this.strategyEngine.getState(sym);
     if (!strategyState) {
-      return {
-        success: false,
-        message: `📊 No data for ${sym}. Register it first.`,
-        type: 'error',
-      };
+      try {
+        logger.info({ symbol: sym }, 'Auto-registering symbol for opinion');
+        await this.strategyEngine.registerSymbol(sym);
+        strategyState = this.strategyEngine.getState(sym);
+      } catch (error) {
+        logger.error({ error, symbol: sym }, 'Failed to auto-register for opinion');
+      }
+      
+      if (!strategyState) {
+        return {
+          success: false,
+          message: `📊 Failed to get data for ${sym}. Try again in a moment.`,
+          type: 'error',
+        };
+      }
     }
 
     if (!isLLMAvailable()) {
@@ -654,7 +1136,44 @@ I'll alert you when price gets within ${threshold}% of ${targetLabel}. ${mode ==
     } else {
       msg += '**Open Positions:**\n';
       for (const pos of positions) {
-        msg += `• ${pos.side} ${pos.symbol}: ${pos.size} @ $${pos.avgPrice.toFixed(2)} (PnL: ${pos.unrealizedPnl >= 0 ? '+' : ''}$${pos.unrealizedPnl.toFixed(2)})\n`;
+        // Get trade details including trailing info
+        const trade = this.tradeExecutor.getActiveTrade(pos.symbol);
+        const slManager = getSLManager();
+        const slLevels = slManager.getSLLevels(pos.symbol);
+        
+        msg += `\n**${pos.side} ${pos.symbol}**\n`;
+        msg += `• Size: ${pos.size} @ $${pos.avgPrice.toFixed(2)}\n`;
+        msg += `• PnL: ${pos.unrealizedPnl >= 0 ? '+' : ''}$${pos.unrealizedPnl.toFixed(2)}\n`;
+        msg += `• Mark: $${pos.markPrice.toFixed(2)}\n`;
+        
+        if (slLevels) {
+          msg += `• 🛡️ Strategic SL: $${slLevels.strategicSL.toFixed(2)}\n`;
+          msg += `• 🚨 Emergency SL: $${slLevels.emergencySL.toFixed(2)}\n`;
+        }
+        
+        if (trade) {
+          const trailStatus = trade.trail.active ? '✅ ACTIVE' : '❌ Inactive';
+          const trailMode = trade.trail.mode;
+          msg += `• 📈 Trail Mode: ${trailMode} (${trailStatus})\n`;
+          
+          if (trade.trail.active && trailMode !== 'NONE') {
+            // Show next trail level
+            const strategyState = this.strategyEngine.getState(pos.symbol);
+            if (strategyState) {
+              let nextTrailLevel: number | null = null;
+              if (trailMode === 'SUPERTREND') {
+                nextTrailLevel = strategyState.snapshot.supertrendValue;
+              } else if (trailMode === 'STRUCTURE') {
+                nextTrailLevel = pos.side === 'LONG' 
+                  ? strategyState.keyLevels.protectedSwingLow 
+                  : strategyState.keyLevels.protectedSwingHigh;
+              }
+              if (nextTrailLevel) {
+                msg += `• 🎯 Next Trail Level: $${nextTrailLevel.toFixed(2)}\n`;
+              }
+            }
+          }
+        }
       }
     }
 

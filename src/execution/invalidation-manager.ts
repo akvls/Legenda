@@ -3,6 +3,7 @@ import { getStrategyEngine } from '../strategy/engine.js';
 import { getPositionTracker } from './position-tracker.js';
 import { getTradeExecutor } from './trade-executor.js';
 import { createLogger } from '../utils/logger.js';
+import eventLogger from '../services/event-logger.js';
 import type { StrategyState, TradeSide } from '../types/index.js';
 
 const logger = createLogger('invalidation-manager');
@@ -34,13 +35,88 @@ export class InvalidationManager extends EventEmitter<InvalidationEvents> {
     logger.info('Invalidation Manager initialized - Swing break auto-exit ACTIVE');
   }
 
+  private lastSupertrendDir: Map<string, string> = new Map();
+
   private setupListeners(): void {
     // Check for invalidation on each candle close
     this.strategyEngine.on('stateUpdate', (state) => {
       if (this.enabled) {
+        this.checkSupertrendFlip(state);
         this.checkSwingBreak(state);
       }
     });
+  }
+
+  /**
+   * Check if Supertrend flipped against position - HARD EXIT
+   * User CANNOT override this
+   */
+  private async checkSupertrendFlip(state: StrategyState): Promise<void> {
+    const symbol = state.symbol;
+    const currentDir = state.snapshot.supertrendDir;
+    const lastDir = this.lastSupertrendDir.get(symbol);
+
+    // Store current direction
+    this.lastSupertrendDir.set(symbol, currentDir);
+
+    // Skip if no previous direction (first update)
+    if (!lastDir) return;
+
+    // Check if direction changed
+    if (lastDir === currentDir) return;
+
+    // Get current position
+    const position = this.positionTracker.getPosition(symbol);
+    if (!position || parseFloat(String(position.size)) === 0) {
+      return; // No position to check
+    }
+
+    const executor = getTradeExecutor();
+    const trade = executor.getActiveTrade(symbol);
+    if (!trade) {
+      return; // No active trade
+    }
+
+    // Check if flip is against our position
+    let flipAgainstUs = false;
+    let reason = '';
+
+    if (trade.side === 'LONG' && currentDir === 'SHORT') {
+      // We're LONG and ST flipped bearish → EXIT
+      flipAgainstUs = true;
+      reason = `SUPERTREND_FLIP: Direction changed from ${lastDir} to ${currentDir} while LONG`;
+    } else if (trade.side === 'SHORT' && currentDir === 'LONG') {
+      // We're SHORT and ST flipped bullish → EXIT
+      flipAgainstUs = true;
+      reason = `SUPERTREND_FLIP: Direction changed from ${lastDir} to ${currentDir} while SHORT`;
+    }
+
+    if (flipAgainstUs) {
+      logger.warn({
+        symbol,
+        side: trade.side,
+        lastDir,
+        currentDir,
+      }, '🚨 SUPERTREND FLIP DETECTED - HARD EXIT (no override)');
+
+      // Log event
+      eventLogger.logEvent('EXIT_BIAS_FLIP', {
+        symbol,
+        payload: {
+          side: trade.side,
+          previousBias: lastDir,
+          newBias: currentDir,
+          price: state.snapshot.price,
+          reason,
+        },
+        message: reason,
+      });
+
+      this.emit('autoExit', symbol, reason);
+
+      // Execute IMMEDIATE exit
+      await this.executeHardExit(symbol, reason);
+    }
   }
 
   /**
@@ -95,6 +171,18 @@ export class InvalidationManager extends EventEmitter<InvalidationEvents> {
         closePrice: closePrice.toFixed(2),
         brokenLevel: brokenLevel.toFixed(2),
       }, '🚨 SWING BREAK DETECTED - HARD EXIT (no override)');
+
+      // Log swing break event
+      eventLogger.logEvent('EXIT_SWING_BREAK', {
+        symbol,
+        payload: {
+          side,
+          price: closePrice,
+          swingLevel: brokenLevel,
+          reason,
+        },
+        message: reason,
+      });
 
       this.emit('swingBreak', symbol, side, closePrice, brokenLevel);
 

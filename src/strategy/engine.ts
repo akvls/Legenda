@@ -142,6 +142,8 @@ export class StrategyEngine extends EventEmitter<StrategyEngineEvents> {
     if (state) {
       this.states.set(symbol, state);
       await this.saveState(state);
+      // Emit stateUpdate so frontend-ws can subscribe to ticker
+      this.emit('stateUpdate', state);
     }
 
     logger.info({ symbol, config: symbolConfig }, 'Symbol registered with strategy engine');

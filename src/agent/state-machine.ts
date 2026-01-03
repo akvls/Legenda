@@ -240,6 +240,44 @@ export class StateMachine {
     if (s.lastStopSide) str += ` [Last stop: ${s.lastStopSide}]`;
     return str;
   }
+
+  /**
+   * Clean up stale symbol states
+   * Removes FLAT states that have no recent activity (memory cleanup)
+   */
+  cleanupStaleStates(activeSymbols: string[]): number {
+    let removed = 0;
+    const activeSet = new Set(activeSymbols.map(s => s.toUpperCase()));
+    
+    for (const [symbol, state] of this.states) {
+      // Only remove if FLAT and not in active trading list
+      if (state.state === 'FLAT' && !state.lastStopSide && !activeSet.has(symbol.toUpperCase())) {
+        this.states.delete(symbol);
+        removed++;
+      }
+    }
+    
+    if (removed > 0) {
+      logger.info({ removed }, 'Cleaned up stale symbol states');
+    }
+    
+    return removed;
+  }
+
+  /**
+   * Remove a specific symbol from tracking
+   */
+  removeSymbol(symbol: string): void {
+    this.states.delete(symbol);
+    logger.debug({ symbol }, 'Symbol removed from state machine');
+  }
+
+  /**
+   * Get count of tracked symbols
+   */
+  getSymbolCount(): number {
+    return this.states.size;
+  }
 }
 
 // Singleton instance

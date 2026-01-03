@@ -53,13 +53,16 @@ IMPORTANT: Respond ONLY with valid JSON, no markdown, no explanation.
 
 Parse the user's message into this JSON structure:
 {
-  "action": "ENTER_LONG" | "ENTER_SHORT" | "CLOSE" | "CLOSE_PARTIAL" | "MOVE_SL" | "PAUSE" | "RESUME" | "INFO" | "OPINION" | "WATCH_CREATE" | "WATCH_CANCEL" | "UNKNOWN",
+  "action": "ENTER_LONG" | "ENTER_SHORT" | "CLOSE" | "CLOSE_PARTIAL" | "CANCEL_ORDER" | "MOVE_SL" | "SET_TP" | "PAUSE" | "RESUME" | "INFO" | "OPINION" | "WATCH_CREATE" | "WATCH_CANCEL" | "UNKNOWN",
   "symbol": "BTCUSDT" | "ETHUSDT" | etc (add USDT if missing),
+  "entryPrice": number | null (LIMIT ORDER: if user specifies entry/limit price like "long BTC at 89500"),
   "riskPercent": number (0.1-5, default 0.5),
+  "positionSizeUsdt": number | null (if user specifies dollar amount like "$100"),
   "leverage": number (1-10, default 5),
   "slRule": "SWING" | "SUPERTREND" | "PRICE" | "NONE",
-  "slPrice": number | null,
+  "slPrice": number | null (MUST extract if user gives a number after SL/stop),
   "tpRule": "NONE" | "RR" | "PRICE",
+  "tpPrice": number | null,
   "tpRR": number | null,
   "trailMode": "SUPERTREND" | "STRUCTURE" | "NONE",
   "closePercent": number (for partial close),
@@ -73,32 +76,65 @@ Parse the user's message into this JSON structure:
   "clarification": string | null (if you need more info)
 }
 
+PARSING RULES FOR NUMBERS:
+1. Entry/Limit Price: A large number (>1000 for BTC, >100 for ETH) RIGHT AFTER the symbol or "at" = entryPrice
+   - "long BTC 89500" → entryPrice: 89500
+   - "long BTC at 89500" → entryPrice: 89500
+   - "short ETH 2500" → entryPrice: 2500
+
+2. Stop Loss: Number AFTER "sl", "stop", "stoploss" = slPrice
+   - "sl 89000" → slRule: "PRICE", slPrice: 89000
+   - "stop 2500" → slRule: "PRICE", slPrice: 2500
+
+3. Dollar Amount: Number WITH $ sign or after "$" = positionSizeUsdt
+   - "$100" → positionSizeUsdt: 100
+   - "100$" → positionSizeUsdt: 100
+
+4. Leverage: Number AFTER "lev", "leverage", or before/after "x" = leverage
+   - "leverage 10" → leverage: 10
+   - "10x" → leverage: 10
+
 Examples:
-- "long btc" → action: ENTER_LONG, symbol: BTCUSDT
+- "long btc" → action: ENTER_LONG, symbol: BTCUSDT, entryPrice: null
+- "long BTC 89500" → action: ENTER_LONG, symbol: BTCUSDT, entryPrice: 89500
+- "long BTC at 89500 SL 89000" → action: ENTER_LONG, symbol: BTCUSDT, entryPrice: 89500, slRule: "PRICE", slPrice: 89000
 - "go short on ethereum with 1% risk" → action: ENTER_SHORT, symbol: ETHUSDT, riskPercent: 1
+- "long BTC SL 89000" → action: ENTER_LONG, symbol: BTCUSDT, slRule: "PRICE", slPrice: 89000
+- "short ETH stop loss at 2500 leverage 10" → action: ENTER_SHORT, symbol: ETHUSDT, slRule: "PRICE", slPrice: 2500, leverage: 10
+- "long btc sl 92000 tp 95000" → action: ENTER_LONG, symbol: BTCUSDT, slRule: "PRICE", slPrice: 92000, tpRule: "PRICE", tpPrice: 95000
+- "CREATE ORDER LONG BTC 89500, SL 89000 NO TP, $100 LEVERAGE 10" → action: ENTER_LONG, symbol: BTCUSDT, entryPrice: 89500, slRule: "PRICE", slPrice: 89000, positionSizeUsdt: 100, leverage: 10
+- "long btc $100 leverage 10 sl 89000" → action: ENTER_LONG, symbol: BTCUSDT, positionSizeUsdt: 100, leverage: 10, slRule: "PRICE", slPrice: 89000
 - "close half my position" → action: CLOSE_PARTIAL, closePercent: 50
 - "move stop to breakeven" → action: MOVE_SL, newSlPrice: 0
+- "move sl to 90000" → action: MOVE_SL, newSlPrice: 90000
+- "set tp BTC 95000" → action: SET_TP, symbol: BTCUSDT, tpPrice: 95000
+- "add tp 95000" → action: SET_TP, tpPrice: 95000
+- "take profit at 3000" → action: SET_TP, tpPrice: 3000
+- "cancel order BTC" → action: CANCEL_ORDER, symbol: BTCUSDT
+- "cancel limit order" → action: CANCEL_ORDER
 - "what do you think about btc?" → action: OPINION, symbol: BTCUSDT
 - "pause trading" → action: PAUSE
 - "how's my position?" → action: INFO
 - "watch btc near sma200" → action: WATCH_CREATE, symbol: BTCUSDT, watchTarget: "sma200", side: "LONG"
 - "scan eth closer to ema1000 for short" → action: WATCH_CREATE, symbol: ETHUSDT, watchTarget: "ema1000", side: "SHORT"
-- "alert me when btc gets to supertrend" → action: WATCH_CREATE, symbol: BTCUSDT, watchTarget: "supertrend"
-- "watch sol near ma 0.3%" → action: WATCH_CREATE, symbol: SOLUSDT, watchTarget: "sma200", threshold: 0.3
-- "watch btc 4 hours auto enter" → action: WATCH_CREATE, symbol: BTCUSDT, expiryMinutes: 240, autoEnter: true
 - "cancel watch btc" → action: WATCH_CANCEL, symbol: BTCUSDT
-- "cancel all watches" → action: WATCH_CANCEL
+
+CRITICAL: When user specifies a stop loss price (e.g. "SL 89000", "stop at 2500", "stoploss 89000"), you MUST set slRule to "PRICE" and slPrice to that exact number.
+Do NOT confuse entry price with SL price - look for "sl"/"stop"/"stoploss" keywords.
 
 Symbol aliases: BTC=BTCUSDT, ETH=ETHUSDT, SOL=SOLUSDT, etc.`;
 
 export interface ParsedIntent {
   action: IntentAction | 'INFO' | 'OPINION' | 'UNKNOWN';
   symbol?: string;
+  entryPrice?: number;  // Limit order price (if specified)
   riskPercent?: number;
+  positionSizeUsdt?: number;
   leverage?: number;
   slRule?: string;
   slPrice?: number;
   tpRule?: string;
+  tpPrice?: number;
   tpRR?: number;
   trailMode?: string;
   closePercent?: number;

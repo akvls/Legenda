@@ -173,13 +173,24 @@ model Trade {
   maePercent Float?
 
   // Scores
-  aiScore   Int?
-  userScore Int?
+  aiScore   Int?    // 1-10 from AI confidence
+  userScore Int?    // 1-10 user's own rating after trade
+
+  // AI Analysis at entry
+  aiRecommendation String?  // ENTER | WAIT | SKIP
+  aiOpinion        String?  // Full AI opinion text
+  aiKeyPoints      String?  // JSON array: ["point1", "point2"]
+  aiRiskLevel      String?  // LOW | MEDIUM | HIGH
+  aiSuggestedRisk  Float?   // AI's suggested risk %
 
   // User input
   userRawCommand String?
   userNote       String?
   userTags       String? // JSON array as string: ["tag1", "tag2"]
+  userReview     String? // User's post-trade review/notes
+
+  // Trade Duration
+  durationSeconds Int?
 
   // Strategy snapshot (JSON strings)
   strategySnapshotAtEntry String?

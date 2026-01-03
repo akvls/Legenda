@@ -13,6 +13,7 @@ import { getTrailingManager } from './execution/trailing-manager.js';
 import { getSLManager } from './execution/sl-manager.js';
 import { getInvalidationManager } from './execution/invalidation-manager.js';
 import { smartOrchestrator } from './agent/smart-orchestrator.js';
+import { initFrontendWebSocket, closeFrontendWebSocket } from './services/frontend-ws.js';
 
 /**
  * AI Trading Assistant - Main Entry Point
@@ -58,6 +59,12 @@ async function main() {
     
     // Initialize position tracker (fetch current positions)
     await positionTracker.initialize();
+    
+    // Restore active trades from database (after position tracker is ready)
+    const restoredTrades = await tradeExecutor.restoreFromDatabase();
+    if (restoredTrades > 0) {
+      logger.info({ count: restoredTrades }, 'Restored active trades from database');
+    }
     
     // Log when ready
     marketWs.on('connected', () => {
@@ -108,8 +115,15 @@ async function main() {
       );
     });
 
-    positionTracker.on('positionClosed', (symbol, side) => {
-      logger.info({ symbol, side }, '📉 Position closed');
+    positionTracker.on('positionClosed', async (symbol, side, realizedPnl) => {
+      logger.info({ symbol, side, realizedPnl: realizedPnl.toFixed(2) }, '📉 Position closed');
+      
+      // Record P&L for circuit breaker (anti-rage protection)
+      if (realizedPnl !== 0) {
+        await smartOrchestrator.recordPnL(realizedPnl);
+        logger.info({ pnl: realizedPnl.toFixed(2) }, 'P&L recorded for circuit breaker');
+      }
+      
       // Notify smart orchestrator for state machine update
       // We don't know the exact reason here, treat as unknown
       smartOrchestrator.handlePositionClosed(symbol, 'UNKNOWN');
@@ -137,6 +151,17 @@ async function main() {
       logger.info('Private WebSocket authenticated and ready');
     });
 
+    // Re-sync state on WebSocket reconnection
+    privateWs.on('stateResyncNeeded', async () => {
+      logger.warn('🔄 WebSocket reconnected - re-syncing state with exchange...');
+      try {
+        await positionTracker.initialize();
+        logger.info('✅ Position state re-synced after reconnection');
+      } catch (error) {
+        logger.error({ error }, '❌ Failed to re-sync state after reconnection');
+      }
+    });
+
     candleManager.on('candleClose', (candle) => {
       logger.debug(
         { symbol: candle.symbol, tf: candle.timeframe, close: candle.close },
@@ -151,13 +176,35 @@ async function main() {
       logger.info('='.repeat(50));
       logger.info('AI Trading Assistant is ready!');
       logger.info(`API: http://localhost:${config.port}`);
+      logger.info(`WebSocket: ws://localhost:${config.port}/ws`);
       logger.info(`Health: http://localhost:${config.port}/api/health`);
       logger.info('='.repeat(50));
     });
 
-    // 5. Graceful shutdown
+    // 4b. Start WebSocket server for frontend real-time updates
+    initFrontendWebSocket(server);
+
+    // 5. Set up periodic cleanup (every hour)
+    const cleanupInterval = setInterval(() => {
+      // Get active symbols from strategy engine
+      const activeSymbols = strategyEngine.getAllStates().map(s => s.symbol);
+      
+      // Clean up stale state machine states
+      const { stateMachine } = require('./agent/state-machine.js');
+      stateMachine.cleanupStaleStates(activeSymbols);
+      
+      logger.debug({ 
+        activeTradeCount: tradeExecutor.getActiveTradeCount(),
+        stateMachineSymbols: stateMachine.getSymbolCount(),
+      }, 'Periodic cleanup complete');
+    }, 60 * 60 * 1000); // Every hour
+
+    // 6. Graceful shutdown
     const shutdown = async (signal: string) => {
       logger.info({ signal }, 'Shutdown signal received');
+      
+      // Clear cleanup interval
+      clearInterval(cleanupInterval);
       
       // Close HTTP server
       server.close(() => {
@@ -165,6 +212,7 @@ async function main() {
       });
       
       // Close WebSockets
+      closeFrontendWebSocket();
       closeMarketWebSocket();
       closePrivateWebSocket();
       
