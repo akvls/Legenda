@@ -53,6 +53,7 @@ export interface ChatHistoryResponse {
 export const strategy = {
   register: (symbol: string) => fetchApi<StrategyResponse>(`/strategy/register/${symbol}`),
   state: (symbol: string) => fetchApi<StrategyResponse>(`/strategy/state/${symbol}`),
+  allStates: () => fetchApi<{ success: boolean; data: any[] }>('/strategy/states'),
 }
 
 // Execution endpoints

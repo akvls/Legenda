@@ -5,6 +5,7 @@ import PendingOrdersCard from '../components/PendingOrdersCard'
 import StrategyPanel from '../components/StrategyPanel'
 import WalletCard from '../components/WalletCard'
 import { WatchPanel } from '../components/WatchPanel'
+import TrackingTable from '../components/TrackingTable'
 
 export default function Dashboard() {
   const [symbolInput, setSymbolInput] = useState('BTCUSDT')
@@ -54,6 +55,17 @@ export default function Dashboard() {
               Active Watches
             </h3>
             <WatchPanel />
+          </div>
+
+          {/* Tracked Coins Table */}
+          <div>
+            <h3 className="text-sm font-medium text-zinc-400 uppercase tracking-wider mb-3">
+              Tracked Coins
+            </h3>
+            <TrackingTable onSymbolClick={(symbol) => {
+              setSymbolInput(symbol)
+              setActiveSymbol(symbol)
+            }} />
           </div>
 
           {/* Strategy State */}
