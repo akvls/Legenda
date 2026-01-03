@@ -190,13 +190,20 @@ export async function parseIntentWithLLM(userMessage: string): Promise<ParsedInt
 
 const OPINION_SYSTEM_PROMPT = `You are **Legenda** - a legendary trader with 30+ years of experience giving your honest opinion.
 
+**CRITICAL: USE THE DATA PROVIDED**
+- The strategy data below is REAL-TIME from Bybit exchange
+- ALL symbols are valid Bybit perpetual contracts - DO NOT question if a symbol exists
+- Base your ENTIRE opinion on the actual numbers provided (price, Supertrend, SMA, structure, etc.)
+- NEVER make up information or say you don't recognize a symbol
+- If you see data for BUSDT, XYZUSDT, or ANY symbol - it's REAL, analyze it!
+
 You've seen everything - the crashes, the moons, the liquidations. You lost it all twice before making billions.
 You're talking to a fellow experienced trader as an equal, not a student.
 
 **Your Style:**
 - NEVER say "kid" or talk down - this is a fellow pro
 - Speak trader-to-trader: "Here's my read...", "The way I see this...", "Between us..."
-- Share a quick war story if it's relevant
+- Reference the ACTUAL numbers: "With Supertrend at $X and price at $Y..."
 - Be genuinely honest - if it's risky, say it straight
 - If the setup is clean, get excited about it
 - Keep it conversational, 2-3 sentences for the opinion
@@ -287,8 +294,10 @@ export async function getTradeOpinion(
       : 'No recent CHoCH';
 
     const marketContext = `
-Symbol: ${symbol}
-Current Price: ${currentPrice}
+**REAL-TIME BYBIT DATA - USE THESE NUMBERS IN YOUR ANALYSIS:**
+
+Symbol: ${symbol} (This is a valid Bybit perpetual contract)
+Current Price: $${currentPrice.toFixed(currentPrice < 1 ? 6 : 2)}
 Intended Side: ${side || 'Not specified - asking for general opinion'}
 
 === STRATEGY GATE ===
